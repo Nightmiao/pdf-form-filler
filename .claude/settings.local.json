@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./venv/Scripts/python.exe -c \"import PySide6, fitz; print\\('deps ok'\\)\")",
+      "Bash(./venv/Scripts/python.exe -m py_compile main.py app/__init__.py app/ui/*.py app/core/*.py)",
+      "Bash(QT_QPA_PLATFORM=offscreen ./venv/Scripts/python.exe -c ' *)",
+      "Bash(./venv/Scripts/python.exe -m py_compile main.py app/ui/*.py app/core/*.py)",
+      "Bash(./venv/Scripts/python.exe -c \"import os; [os.remove\\(f\\) for f in ['_test.pdf','_test_out.pdf','_test_filled.pdf'] if os.path.exists\\(f\\)]; print\\('清理完成'\\)\")"
+    ]
+  }
+}

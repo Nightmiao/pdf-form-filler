@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.spec
+*.exe
+
+# 虚拟环境
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# 操作系统
+Thumbs.db
+.DS_Store
+
+# 用户数据目录（运行时生成）
+form-filler/data/
