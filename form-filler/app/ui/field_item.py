@@ -1,18 +1,29 @@
-"""字段图元 — 画布上可拖拽、旋转、缩放的矩形框"""
+"""字段图元 — 画布上可拖拽、旋转、缩放的矩形框
+
+注意：FieldItem 内部持有的 FieldDefinition.rect 处于"显示坐标系"
+（页面旋转时由 PdfCanvas 换算好再传入），其 rotation 也已包含页面旋转角。
+画布在对外发射 field_created / field_modified 时会再换算回 PDF 坐标。
+"""
 
 from PySide6.QtWidgets import (
     QGraphicsItem, QGraphicsObject, QGraphicsRectItem, QGraphicsEllipseItem,
-    QGraphicsSceneMouseEvent, QStyleOptionGraphicsItem, QWidget,
+    QGraphicsSceneMouseEvent, QStyleOptionGraphicsItem,
 )
 from PySide6.QtCore import Qt, Signal, QRectF, QPointF, QLineF
-from PySide6.QtGui import (
-    QPainter, QPen, QColor, QBrush, QFont,
-    QCursor,
-)
+from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QFont
 
 from app.core.field_model import FieldDefinition
 
 HANDLE_SIZE = 8
+
+# 各字段类型在画布上的标签颜色
+TYPE_COLORS = {
+    "text": "#1D4ED8",
+    "number": "#0E7490",
+    "date": "#7C3AED",
+    "select": "#B45309",
+    "checkbox": "#047857",
+}
 
 
 class ResizeHandle(QGraphicsEllipseItem):
@@ -25,9 +36,11 @@ class ResizeHandle(QGraphicsEllipseItem):
     Rotate = 4
 
     def __init__(self, handle_type: int, parent=None):
-        super().__init__(-HANDLE_SIZE / 2, -HANDLE_SIZE / 2, HANDLE_SIZE, HANDLE_SIZE, parent)
+        super().__init__(
+            -HANDLE_SIZE / 2, -HANDLE_SIZE / 2, HANDLE_SIZE, HANDLE_SIZE, parent
+        )
         self._handle_type = handle_type
-        self.setZValue(200)  # 确保在最上层
+        self.setZValue(200)
 
         if handle_type == self.Rotate:
             self.setPen(QPen(QColor(255, 140, 0), 2))
@@ -51,11 +64,13 @@ class ResizeHandle(QGraphicsEllipseItem):
 
 
 class FieldItem(QGraphicsObject):
-    """画布上的可交互字段图元 — 手动处理所有交互，避免 Qt 内置行为冲突"""
+    """画布上的可交互字段图元 — 手动处理所有交互"""
 
     field_changed = Signal(FieldDefinition)
     field_deleted = Signal(str)
     field_selected = Signal(str)
+    interaction_started = Signal(str)  # 拖拽/缩放/旋转开始（供撤销快照）
+    interaction_ended = Signal(str)    # 交互结束
 
     def __init__(self, field: FieldDefinition, scale: float, mode: str = "design"):
         super().__init__()
@@ -63,12 +78,10 @@ class FieldItem(QGraphicsObject):
         self._scale = scale
         self._selected: bool = False
         self._mode: str = mode
-        self._highlighted: bool = False
-        self._fill_value: str = ""  # 填写模式下显示的值
-        self._canvas = None  # 所属画布，用于吸附/对齐线（由 set_canvas 注入）
+        self._fill_value: str = ""
+        self._canvas = None
 
-        # 交互状态
-        self._active_handle: int | None = None  # 当前拖拽的手柄类型
+        self._active_handle: int | None = None
         self._handle_start_pos: QPointF | None = None
         self._handle_start_rect: tuple | None = None
         self._rotating: bool = False
@@ -77,13 +90,12 @@ class FieldItem(QGraphicsObject):
         self._moving: bool = False
         self._move_start_pos: QPointF | None = None
         self._move_start_rect: tuple | None = None
+        self._interacting: bool = False
 
         self._setup_handles()
         self._update_transform()
 
-        flags = QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
-        # 注意：不设 ItemIsMovable，手动处理移动
-        self.setFlags(flags)
+        self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
         self.setAcceptHoverEvents(True)
         self.setZValue(10)
 
@@ -91,8 +103,13 @@ class FieldItem(QGraphicsObject):
 
     def _setup_handles(self):
         self._handles: dict[int, ResizeHandle] = {}
-        h = ResizeHandle
-        for htype in [h.TopLeft, h.TopRight, h.BottomLeft, h.BottomRight, h.Rotate]:
+        for htype in [
+            ResizeHandle.TopLeft,
+            ResizeHandle.TopRight,
+            ResizeHandle.BottomLeft,
+            ResizeHandle.BottomRight,
+            ResizeHandle.Rotate,
+        ]:
             handle = ResizeHandle(htype, self)
             handle.hide()
             self._handles[htype] = handle
@@ -115,50 +132,80 @@ class FieldItem(QGraphicsObject):
 
     def boundingRect(self) -> QRectF:
         w, h = self._pdf_rect_to_pixel()
-        return QRectF(-12, -34, w + 24, h + 46)
+        return QRectF(-14, -36, w + 28, h + 50)
 
     def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget=None):
         w, h = self._pdf_rect_to_pixel()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         rect = QRectF(0, 0, w, h)
-        if self._selected or self._highlighted:
-            pen = QPen(QColor(0, 120, 255), 2.5)
-            brush = QBrush(QColor(0, 120, 255, 35))
-        else:
-            pen = QPen(QColor(0, 120, 255, 170), 1.5)
-            brush = QBrush(QColor(255, 255, 255, 50))
 
-        painter.setPen(pen)
-        painter.setBrush(brush)
-        painter.drawRect(rect)
+        if self._mode == "fill":
+            # 填写模式：淡蓝底 + 深蓝框，输入内容直接显示在框内
+            if self._selected:
+                pen = QPen(QColor(59, 130, 246), 2.5)
+                brush = QBrush(QColor(59, 130, 246, 40))
+            else:
+                pen = QPen(QColor(59, 130, 246, 140), 1.5)
+                brush = QBrush(QColor(59, 130, 246, 18))
+            painter.setPen(pen)
+            painter.setBrush(brush)
+            painter.drawRect(rect)
 
-        # 填写模式下显示填写的值
-        if self._mode == "fill" and self._fill_value:
-            painter.setPen(QPen(QColor(0, 0, 180)))
-            # 字号 = 字段设计字号，QFont 直接使用 pt 单位
+            painter.setPen(QPen(QColor(24, 51, 133)))
             display_font_size = max(9, int(self._field.font_size))
             font = QFont("Microsoft YaHei", display_font_size)
             painter.setFont(font)
-            align_map = {"left": Qt.AlignmentFlag.AlignLeft, "center": Qt.AlignmentFlag.AlignCenter, "right": Qt.AlignmentFlag.AlignRight}
+            align_map = {
+                "left": Qt.AlignmentFlag.AlignLeft,
+                "center": Qt.AlignmentFlag.AlignCenter,
+                "right": Qt.AlignmentFlag.AlignRight,
+            }
             align = align_map.get(self._field.alignment, Qt.AlignmentFlag.AlignLeft)
-            painter.drawText(QRectF(2, 2, w - 4, h - 4), align | Qt.AlignmentFlag.AlignVCenter, self._fill_value)
+            if self._fill_value:
+                painter.drawText(
+                    QRectF(3, 2, max(w - 6, 4), max(h - 4, 4)),
+                    align | Qt.AlignmentFlag.AlignVCenter,
+                    self._fill_value,
+                )
         else:
-            # 设计模式：显示字段名标签
+            # 设计模式：白色底 + 蓝框 + 字段名/类型标签
+            if self._selected:
+                pen = QPen(QColor(59, 130, 246), 2.5)
+                brush = QBrush(QColor(59, 130, 246, 35))
+            else:
+                pen = QPen(QColor(59, 130, 246, 170), 1.5)
+                brush = QBrush(QColor(255, 255, 255, 60))
+            painter.setPen(pen)
+            painter.setBrush(brush)
+            painter.drawRect(rect)
+
+            type_color = TYPE_COLORS.get(self._field.field_type, "#1D4ED8")
             painter.setPen(QPen(QColor(30, 30, 30)))
             font = QFont("Microsoft YaHei", 9)
             painter.setFont(font)
-            label = f"{self._field.name} [{self._field.display_type}]"
+            label = self._field.name
             if self._field.required:
                 label += " *"
                 painter.setPen(QPen(QColor(200, 0, 0)))
             painter.drawText(
-                QRectF(3, 1, w - 6, min(h, 20)),
+                QRectF(4, 1, max(w - 8, 4), min(h, 18)),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                 label,
             )
+            # 类型小徽标
+            if h >= 22 and w >= 46:
+                badge = f"[{self._field.display_type}]"
+                painter.setPen(QPen(QColor(type_color)))
+                fm = font
+                fm.setPointSize(8)
+                painter.setFont(fm)
+                painter.drawText(
+                    QRectF(4, min(h, 20) - 2, max(w - 8, 4), max(h - 20, 12)),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom,
+                    badge,
+                )
 
-        # 手柄显隐
         show = self._selected and self._mode == "design"
         for handle in self._handles.values():
             handle.setVisible(show)
@@ -166,11 +213,13 @@ class FieldItem(QGraphicsObject):
     # ── 鼠标交互 ──────────────────────────────────
 
     def _find_handle_at(self, pos: QPointF) -> int | None:
-        """检查 pos 是否在手柄上，返回手柄类型或 None"""
         for htype, handle in self._handles.items():
             if handle.isVisible():
                 hp = handle.pos()
-                if abs(pos.x() - hp.x()) <= HANDLE_SIZE + 2 and abs(pos.y() - hp.y()) <= HANDLE_SIZE + 2:
+                if (
+                    abs(pos.x() - hp.x()) <= HANDLE_SIZE + 2
+                    and abs(pos.y() - hp.y()) <= HANDLE_SIZE + 2
+                ):
                     return htype
         return None
 
@@ -178,8 +227,16 @@ class FieldItem(QGraphicsObject):
         h = self._handles.get(ResizeHandle.Rotate)
         if h and h.isVisible():
             hp = h.pos()
-            return abs(pos.x() - hp.x()) <= HANDLE_SIZE + 2 and abs(pos.y() - hp.y()) <= HANDLE_SIZE + 2
+            return (
+                abs(pos.x() - hp.x()) <= HANDLE_SIZE + 2
+                and abs(pos.y() - hp.y()) <= HANDLE_SIZE + 2
+            )
         return False
+
+    def _begin_interaction(self):
+        if not self._interacting:
+            self._interacting = True
+            self.interaction_started.emit(self._field.id)
 
     def mousePressEvent(self, event: QGraphicsSceneMouseEvent):
         if event.button() != Qt.MouseButton.LeftButton or self._mode != "design":
@@ -188,31 +245,30 @@ class FieldItem(QGraphicsObject):
 
         pos = event.pos()
 
-        # 1. 先检查旋转手柄
         if self._is_on_rotate_handle(pos):
+            self._begin_interaction()
             self._rotating = True
             self._rotation_start = event.scenePos()
             self._rotation_original = self._field.rotation
             event.accept()
             return
 
-        # 2. 检查缩放手柄
         handle_type = self._find_handle_at(pos)
         if handle_type is not None and handle_type != ResizeHandle.Rotate:
+            self._begin_interaction()
             self._active_handle = handle_type
             self._handle_start_pos = event.scenePos()
             self._handle_start_rect = self._field.rect
             event.accept()
             return
 
-        # 3. 在字段本体上 → 移动 + 选中
         w, h = self._pdf_rect_to_pixel()
         if QRectF(0, 0, w, h).contains(pos):
+            self._begin_interaction()
             self._moving = True
             self._move_start_pos = event.scenePos()
             self._move_start_rect = self._field.rect
 
-        # 通知选中
         self._selected = True
         self.field_selected.emit(self._field.id)
         self.update()
@@ -223,11 +279,9 @@ class FieldItem(QGraphicsObject):
             super().mouseMoveEvent(event)
             return
 
-        # 旋转
         if self._rotating and self._rotation_start:
-            center = self.mapToScene(
-                QRectF(0, 0, self._pdf_rect_to_pixel()[0], self._pdf_rect_to_pixel()[1]).center()
-            )
+            w, h = self._pdf_rect_to_pixel()
+            center = self.mapToScene(QRectF(0, 0, w, h).center())
             line1 = QLineF(center, self._rotation_start)
             line2 = QLineF(center, event.scenePos())
             angle_delta = line2.angleTo(line1)
@@ -244,7 +298,6 @@ class FieldItem(QGraphicsObject):
             event.accept()
             return
 
-        # 缩放
         if self._active_handle is not None and self._handle_start_pos:
             delta = event.scenePos() - self._handle_start_pos
             dx = delta.x() / self._scale
@@ -253,22 +306,16 @@ class FieldItem(QGraphicsObject):
 
             ht = self._active_handle
             if ht == ResizeHandle.TopLeft:
-                nx0, ny0 = x0 + dx, y0 + dy
-                nx1, ny1 = x1, y1
+                nx0, ny0, nx1, ny1 = x0 + dx, y0 + dy, x1, y1
             elif ht == ResizeHandle.TopRight:
-                nx0, ny0 = x0, y0 + dy
-                nx1, ny1 = x1 + dx, y1
+                nx0, ny0, nx1, ny1 = x0, y0 + dy, x1 + dx, y1
             elif ht == ResizeHandle.BottomLeft:
-                nx0, ny0 = x0 + dx, y0
-                nx1, ny1 = x1, y1 + dy
-            else:  # BottomRight
-                nx0, ny0 = x0, y0
-                nx1, ny1 = x1 + dx, y1 + dy
+                nx0, ny0, nx1, ny1 = x0 + dx, y0, x1, y1 + dy
+            else:
+                nx0, ny0, nx1, ny1 = x0, y0, x1 + dx, y1 + dy
 
-            # 保持最小尺寸
             if nx1 - nx0 >= 5 and ny1 - ny0 >= 5:
                 self._field.rect = (nx0, ny0, nx1, ny1)
-                # 缩放时的网格吸附 + 对齐线
                 if self._canvas is not None:
                     self._field.rect = self._canvas.snap_resize_pdf_rect(
                         self._field.id, self._field.rect
@@ -281,14 +328,13 @@ class FieldItem(QGraphicsObject):
             event.accept()
             return
 
-        # 移动
         if self._moving and self._move_start_pos:
             delta = event.scenePos() - self._move_start_pos
             dx = delta.x() / self._scale
             dy = delta.y() / self._scale
             x0, y0, x1, y1 = self._move_start_rect
             self._field.rect = (x0 + dx, y0 + dy, x1 + dx, y1 + dy)
-            self._apply_snap()  # 网格吸附 + 对齐线
+            self._apply_snap()
             self._update_transform()
             self._update_handle_positions()
             self.update()
@@ -299,7 +345,7 @@ class FieldItem(QGraphicsObject):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent):
-        # 清除所有交互状态
+        was_interacting = self._interacting
         self._active_handle = None
         self._handle_start_pos = None
         self._handle_start_rect = None
@@ -308,21 +354,21 @@ class FieldItem(QGraphicsObject):
         self._moving = False
         self._move_start_pos = None
         self._move_start_rect = None
-        # 拖拽结束 → 清除对齐辅助线
+        self._interacting = False
         if self._canvas is not None:
             self._canvas._clear_guides()
         self._update_handle_positions()
         self.update()
+        if was_interacting:
+            self.interaction_ended.emit(self._field.id)
         super().mouseReleaseEvent(event)
 
     def hoverMoveEvent(self, event: QGraphicsSceneMouseEvent):
-        # 检查手柄并改变光标
         pos = event.pos()
         if self._mode == "design" and self._selected:
             ht = self._find_handle_at(pos)
             if ht is not None:
-                handle = self._handles[ht]
-                self.setCursor(handle.cursor())
+                self.setCursor(self._handles[ht].cursor())
             elif self._is_on_rotate_handle(pos):
                 self.setCursor(Qt.CursorShape.CrossCursor)
             elif QRectF(0, 0, *self._pdf_rect_to_pixel()).contains(pos):
@@ -330,28 +376,31 @@ class FieldItem(QGraphicsObject):
             else:
                 self.setCursor(Qt.CursorShape.CrossCursor)
         else:
-            self.setCursor(Qt.CursorShape.PointingHandCursor if self._mode == "fill" else Qt.CursorShape.CrossCursor)
+            self.setCursor(
+                Qt.CursorShape.PointingHandCursor
+                if self._mode == "fill"
+                else Qt.CursorShape.CrossCursor
+            )
         super().hoverMoveEvent(event)
 
-    # ── 选中 ──────────────────────────────────────
+    # ── 状态 ──────────────────────────────────────
 
     def set_selected(self, selected: bool):
         self._selected = selected
         self.update()
 
     def set_fill_value(self, value: str):
-        """设置填写模式下显示的值"""
         self._fill_value = value
         self.update()
 
     def set_canvas(self, canvas):
-        """注入所属画布，用于网格吸附与对齐线"""
         self._canvas = canvas
 
     def _apply_snap(self):
-        """把当前 rect 交给画布做吸附（移动时调用，保持尺寸）"""
         if self._canvas is not None:
-            self._field.rect = self._canvas.snap_pdf_rect(self._field.id, self._field.rect)
+            self._field.rect = self._canvas.snap_pdf_rect(
+                self._field.id, self._field.rect
+            )
 
     @property
     def field(self) -> FieldDefinition:

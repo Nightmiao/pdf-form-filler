@@ -1,18 +1,21 @@
-"""主窗口 — 管理全局布局和模式切换"""
+"""主窗口 — 全局布局、模式切换、记录管理、必填校验与快捷键"""
 
-import os
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QStackedWidget,
-    QStatusBar, QLabel, QMessageBox,
+    QMainWindow, QWidget, QHBoxLayout, QStackedWidget,
+    QStatusBar, QLabel, QMessageBox, QFileDialog, QInputDialog,
 )
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 
 from app.ui.home_page import HomePage
 from app.ui.design_mode import DesignMode
 from app.ui.fill_mode import FillMode
+from app.ui.thumbnail_bar import ThumbnailBar
+from app.ui.field_panel import FieldDesignPanel, FieldFillPanel
+from app.ui.onboarding import OnboardingDialog
 from app.core.template_manager import TemplateManager
 from app.core.record_manager import RecordManager
+from app.core.settings import load_settings, save_settings
 from app.core.field_model import TemplateMeta, FillRecord
 
 
@@ -28,9 +31,11 @@ class MainWindow(QMainWindow):
         self.data_dir = data_dir
         self.template_manager = TemplateManager(data_dir)
         self.record_manager = RecordManager(data_dir)
+        self._settings = load_settings(data_dir)
 
         self._current_template: TemplateMeta | None = None
         self._current_record: FillRecord | None = None
+        self._onboarding_shown = False
 
         self._setup_ui()
         self._setup_shortcuts()
@@ -39,11 +44,9 @@ class MainWindow(QMainWindow):
     # ── UI 搭建 ────────────────────────────────────
 
     def _setup_ui(self):
-        """搭建主界面结构"""
-        self.setWindowTitle("狸猫猫的表单填写工具")
-        self.setMinimumSize(900, 600)
+        self.setWindowTitle("狸猫猫表单")
+        self.setMinimumSize(1024, 680)
 
-        # 中央部件
         central = QWidget()
         self.setCentralWidget(central)
 
@@ -51,70 +54,70 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # 左侧边栏（模板列表 / 缩略图）
+        # 左侧：编辑模式下的缩略图导航（首页时隐藏）
         self.left_panel = QStackedWidget()
-        self.left_panel.setFixedWidth(220)
+        self.left_panel.setFixedWidth(208)
+        self.thumbnail_bar = ThumbnailBar()
+        self.thumbnail_bar.page_clicked.connect(self._on_thumbnail_page_clicked)
+        self.left_panel.addWidget(self.thumbnail_bar)
+        main_layout.addWidget(self.left_panel)
+
+        # 中央：模式区（0=首页 1=设计 2=填写）
+        self.center_stack = QStackedWidget()
 
         self.home_page = HomePage(self.template_manager)
         self.home_page.template_selected.connect(self._on_template_selected)
         self.home_page.template_deleted.connect(self._on_template_deleted)
-        self.left_panel.addWidget(self.home_page)
-
-        # 缩略图导航栏（延迟创建）
-        from app.ui.thumbnail_bar import ThumbnailBar
-        self.thumbnail_bar = ThumbnailBar()
-        self.thumbnail_bar.page_clicked.connect(self._on_thumbnail_page_clicked)
-        self.left_panel.addWidget(self.thumbnail_bar)
-
-        main_layout.addWidget(self.left_panel)
-
-        # 中央区域（PDF画布）
-        self.center_stack = QStackedWidget()
-
-        # 占位页面（首页时显示）
-        self.placeholder = QLabel("请从左侧选择模板，或点击「新建模板」上传PDF表单")
-        self.placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.placeholder.setStyleSheet("color: #888; font-size: 14px;")
-        self.center_stack.addWidget(self.placeholder)
+        self.home_page.help_requested.connect(self._show_onboarding)
+        self.center_stack.addWidget(self.home_page)
 
         self.design_mode = DesignMode()
         self.design_mode.field_selected.connect(self._on_field_selected_in_design)
         self.design_mode.back_to_home.connect(self._show_home)
         self.design_mode.switch_to_fill.connect(self._on_design_to_fill)
         self.design_mode.save_requested.connect(self._save_template)
-        # 画布字段变更 → 刷新面板
-        self.design_mode._canvas.field_created.connect(self._on_field_created_in_canvas)
+        self.design_mode.fields_restored.connect(self._on_fields_restored)
+        canvas_d = self.design_mode.canvas
+        canvas_d.field_created.connect(self._on_field_created_in_canvas)
+        canvas_d.field_modified.connect(self._on_field_modified_in_canvas)
+        canvas_d.field_deleted.connect(self._on_field_deleted_in_canvas)
+        canvas_d.current_page_changed.connect(self._on_canvas_page_changed)
         self.center_stack.addWidget(self.design_mode)
 
         self.fill_mode = FillMode()
-        self.fill_mode.fill_data_changed.connect(self._on_fill_data_changed)
         self.fill_mode.back_to_home.connect(self._show_home)
         self.fill_mode.switch_to_design.connect(self._on_fill_to_design)
-        self.fill_mode._canvas.field_selected_sig.connect(self._on_field_selected_in_fill)
+        canvas_f = self.fill_mode.canvas
+        canvas_f.field_selected_sig.connect(self._on_field_selected_in_fill)
+        canvas_f.current_page_changed.connect(self._on_canvas_page_changed)
         self.center_stack.addWidget(self.fill_mode)
+        main_layout.addWidget(self.center_stack, stretch=2)
 
-        main_layout.addWidget(self.center_stack, stretch=1)
-
-        # 右侧面板（字段属性 / 填写面板）
+        # 右侧面板
         self.right_panel = QStackedWidget()
-        self.right_panel.setFixedWidth(300)
+        self.right_panel.setMinimumWidth(300)
+        self.right_panel.setMaximumWidth(360)
 
-        from app.ui.field_panel import FieldDesignPanel, FieldFillPanel
         self.field_design_panel = FieldDesignPanel()
         self.field_design_panel.field_updated.connect(self._on_field_updated)
-        self.field_design_panel.field_deleted.connect(self._on_field_deleted)
         self.field_design_panel.field_focus_requested.connect(self._on_field_focus_requested)
+        self.field_design_panel.field_delete_requested.connect(self._on_field_delete_requested)
+        self.field_design_panel.field_duplicate_requested.connect(self._on_field_duplicate_requested)
         self.right_panel.addWidget(self.field_design_panel)
 
         self.field_fill_panel = FieldFillPanel()
         self.field_fill_panel.field_value_changed.connect(self._on_field_value_changed)
         self.field_fill_panel.tab_next_requested.connect(self._on_tab_next)
+        self.field_fill_panel.tab_prev_requested.connect(self._on_tab_prev)
         self.field_fill_panel.save_requested.connect(self._on_save_record)
-        self.field_fill_panel.print_requested.connect(self._on_print)
-        self.field_fill_panel.export_requested.connect(self._on_export_pdf)
         self.field_fill_panel.preview_requested.connect(self._on_preview)
+        self.field_fill_panel.export_requested.connect(self._on_export_pdf)
+        self.field_fill_panel.print_requested.connect(self._on_print)
+        self.field_fill_panel.record_selected.connect(self._on_record_selected)
+        self.field_fill_panel.record_new_requested.connect(self._on_record_new)
+        self.field_fill_panel.record_rename_requested.connect(self._on_record_rename)
+        self.field_fill_panel.record_delete_requested.connect(self._on_record_delete)
         self.right_panel.addWidget(self.field_fill_panel)
-
         main_layout.addWidget(self.right_panel)
 
         # 状态栏
@@ -124,93 +127,112 @@ class MainWindow(QMainWindow):
         self.status_bar.addWidget(self._status_label)
 
     def _setup_shortcuts(self):
-        """设置全局快捷键"""
-        # Ctrl+S 保存
         save_action = QAction("保存", self)
         save_action.setShortcut(QKeySequence.StandardKey.Save)
         save_action.triggered.connect(self._on_save_shortcut)
         self.addAction(save_action)
 
-        # Ctrl+Z 撤销
         undo_action = QAction("撤销", self)
         undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         undo_action.triggered.connect(self._on_undo)
         self.addAction(undo_action)
 
-        # Ctrl+Y 重做
         redo_action = QAction("重做", self)
         redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         redo_action.triggered.connect(self._on_redo)
         self.addAction(redo_action)
 
-        # Ctrl+P 打印
         print_action = QAction("打印", self)
         print_action.setShortcut(QKeySequence.StandardKey.Print)
         print_action.triggered.connect(self._on_print)
         self.addAction(print_action)
 
+    # ── 新手引导 ──────────────────────────────────
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._onboarding_shown and not self._settings.get("onboarding_done"):
+            self._onboarding_shown = True
+            QTimer.singleShot(150, self._show_onboarding)
+
+    def _show_onboarding(self):
+        dialog = OnboardingDialog(self)
+        dialog.exec()
+        self._settings["onboarding_done"] = True
+        save_settings(self.data_dir, self._settings)
+
     # ── 模式切换 ──────────────────────────────────
 
     def _show_home(self):
-        """切换到首页 — 离开前自动保存"""
-        # 如果在设计模式，先保存模板
         if self.center_stack.currentIndex() == self.MODE_DESIGN and self._current_template:
             self._save_template()
-        # 如果在填写模式，先保存记录
         if self.center_stack.currentIndex() == self.MODE_FILL and self._current_record:
-            self._current_record.values.update(
-                self.field_fill_panel.get_current_values()
-            )
+            self._flush_record()
             self.record_manager.save(self._current_record)
 
         self._current_template = None
         self._current_record = None
-        self.center_stack.setCurrentIndex(0)
-        self.left_panel.setCurrentIndex(0)
+        self.center_stack.setCurrentIndex(self.MODE_HOME)
+        self.left_panel.hide()
         self.right_panel.hide()
         self.home_page.refresh()
-        self.setWindowTitle("狸猫猫的表单填写工具")
-        self._set_status("请选择或创建模板")
+        self.setWindowTitle("狸猫猫表单")
+        self._set_status("选择模板开始，或点击「新建模板」上传 PDF 表单")
 
     def _enter_design_mode(self, template: TemplateMeta):
-        """进入设计模式"""
         self._current_template = template
-
         pdf_path = self.template_manager.get_pdf_path(template.id)
         self.design_mode.load_template(template, pdf_path)
-
-        self.center_stack.setCurrentIndex(1)  # 设计模式
-        self.left_panel.setCurrentIndex(1)  # 缩略图
+        self.center_stack.setCurrentIndex(self.MODE_DESIGN)
+        self.left_panel.show()
+        self.left_panel.setCurrentIndex(0)
         self.thumbnail_bar.load_pages(template, pdf_path)
         self.thumbnail_bar.set_current_page(0)
         self.right_panel.show()
-        self.right_panel.setCurrentIndex(0)  # 设计面板
+        self.right_panel.setCurrentIndex(0)
         self.field_design_panel.load_fields(template)
-        self.setWindowTitle(f"设计模式 - {template.name} - 狸猫猫的表单填写工具")
-        self._set_status(f"设计模式 | {template.page_count} 页 | {len(template.fields)} 个字段")
+        self.setWindowTitle(f"设计字段 - {template.name} - 狸猫猫表单")
+        self._set_status("按住鼠标左键在表格上拖拽画框；拖动可移动，拖四角圆点可调整大小")
 
-    def _enter_fill_mode(self, template: TemplateMeta, record: FillRecord = None):
-        """进入填写模式"""
+    def _enter_fill_mode(self, template: TemplateMeta, record: FillRecord | None = None):
         self._current_template = template
-        self._current_record = record or self.record_manager.create(template.id)
+        if record is None:
+            records = self.record_manager.list_for_template(template.id)
+            if records:
+                record = records[0]
+            else:
+                record = self.record_manager.create(
+                    template.id, self.record_manager.next_name(template.id)
+                )
+        self._current_record = record
+        self._reload_fill()
 
+    def _reload_fill(self):
+        """（重新）加载填写模式：画布 + 面板 + 记录下拉"""
+        template = self._current_template
+        record = self._current_record
         pdf_path = self.template_manager.get_pdf_path(template.id)
-        self.fill_mode.load_template(template, pdf_path, self._current_record)
-
-        self.center_stack.setCurrentIndex(2)  # 填写模式
-        self.left_panel.setCurrentIndex(1)  # 缩略图
+        self.fill_mode.load_template(template, pdf_path, record)
+        self.center_stack.setCurrentIndex(self.MODE_FILL)
+        self.left_panel.show()
+        self.left_panel.setCurrentIndex(0)
         self.thumbnail_bar.load_pages(template, pdf_path)
         self.right_panel.show()
-        self.right_panel.setCurrentIndex(1)  # 填写面板
-        self.field_fill_panel.load_fields(template, self._current_record)
-        self.setWindowTitle(f"填写模式 - {template.name} - 狸猫猫的表单填写工具")
-        self._set_status(f"填写模式 | TAB 切换字段 | Ctrl+S 保存")
+        self.right_panel.setCurrentIndex(1)
+        self.field_fill_panel.load_fields(template, record)
+        self._refresh_records()
+        self.setWindowTitle(f"填写表单 - {template.name} - 狸猫猫表单")
+        self._set_status("点击 PDF 上的蓝色框或按 Tab 依次填写；Ctrl+S 保存草稿")
 
-    # ── 信号处理 ──────────────────────────────────
+    def _refresh_records(self):
+        if not self._current_template:
+            return
+        records = self.record_manager.list_for_template(self._current_template.id)
+        self.field_fill_panel.set_records(records, self._current_record.id)
+
+    # ── 首页信号 ──────────────────────────────────
 
     def _on_template_selected(self, template: TemplateMeta, action: str):
-        """模板被选中 — 从磁盘重新加载保证数据最新"""
-        # 先从磁盘重新加载模板（确保拿到最新数据）
         fresh = self.template_manager.get(template.id)
         if fresh is None:
             self._set_status("模板不存在，请刷新")
@@ -219,81 +241,60 @@ class MainWindow(QMainWindow):
             self._enter_design_mode(fresh)
         elif action == "fill":
             self._enter_fill_mode(fresh)
-        elif action == "fill_continue":
-            records = self.record_manager.list_for_template(fresh.id)
-            if records:
-                self._enter_fill_mode(fresh, records[0])
-            else:
-                self._enter_fill_mode(fresh)
 
     def _on_template_deleted(self, template_id: str):
-        """模板被删除"""
         self._show_home()
 
     def _on_thumbnail_page_clicked(self, page_num: int):
-        """缩略图点击切换页面"""
         if self._current_template is None:
             return
         if self.center_stack.currentIndex() == self.MODE_DESIGN:
             self.design_mode.set_current_page(page_num)
         elif self.center_stack.currentIndex() == self.MODE_FILL:
             self.fill_mode.set_current_page(page_num)
+        self.thumbnail_bar.set_current_page(page_num)
+
+    def _on_canvas_page_changed(self, page_num: int):
+        self.thumbnail_bar.set_current_page(page_num)
+
+    # ── 设计模式信号 ──────────────────────────────
 
     def _on_field_selected_in_design(self, field_id: str):
-        """设计模式中字段被选中"""
-        if self._current_template:
-            # 从模板重新加载字段（画布修改后可能变了）
-            self.field_design_panel.load_fields(self._current_template)
-            self.field_design_panel.select_field(field_id)
+        self.field_design_panel.select_field(field_id)
 
     def _on_field_created_in_canvas(self, field):
-        """画布上创建了新字段，刷新面板"""
         if self._current_template:
             self.field_design_panel.load_fields(self._current_template)
             self.field_design_panel.select_field(field.id)
+            self._mark_modified()
 
-    def _on_field_selected_in_fill(self, field_id: str):
-        """填写模式中字段被选中，聚焦填写控件"""
-        self.field_fill_panel.focus_field(field_id)
-
-    def _on_design_to_fill(self):
-        """从设计模式切换到填写模式"""
+    def _on_field_modified_in_canvas(self, field):
         if self._current_template:
-            self._save_template()
-            # 重新从磁盘加载（确保填写模式拿到完整数据）
-            fresh = self.template_manager.get(self._current_template.id)
-            if fresh:
-                self._enter_fill_mode(fresh)
-            else:
-                self._enter_fill_mode(self._current_template)
+            for i, f in enumerate(self._current_template.fields):
+                if f.id == field.id:
+                    self._current_template.fields[i] = field
+                    break
+            self._mark_modified()
 
-    def _on_fill_to_design(self):
-        """从填写模式切换到设计模式"""
+    def _on_field_deleted_in_canvas(self, field_id: str):
         if self._current_template:
-            # 先保存填写记录
-            if self._current_record:
-                self._current_record.values.update(
-                    self.field_fill_panel.get_current_values()
-                )
-                self.record_manager.save(self._current_record)
-            # 从磁盘加载模板
-            fresh = self.template_manager.get(self._current_template.id)
-            if fresh:
-                self._enter_design_mode(fresh)
-            else:
-                self._enter_design_mode(self._current_template)
+            self._current_template.fields = [
+                f for f in self._current_template.fields if f.id != field_id
+            ]
+            self.field_design_panel.load_fields(self._current_template)
+            self._mark_modified()
 
-    def _save_template(self):
-        """保存当前模板到磁盘"""
+    def _on_fields_restored(self, fields: list):
+        """撤销/重做后同步模板与面板"""
         if self._current_template:
-            self.template_manager.update(self._current_template)
-            self._set_status(f"模板已保存 - {self._current_template.name}")
-            self._clear_modified()
+            self._current_template.fields = fields
+            self.field_design_panel.load_fields(self._current_template)
+            self._mark_modified()
+            self._set_status("已撤销/重做操作")
 
     def _on_field_updated(self, field):
-        """字段属性更新"""
+        """右侧属性面板更新字段"""
         if self._current_template:
-            # 更新模板中的字段
             for i, f in enumerate(self._current_template.fields):
                 if f.id == field.id:
                     self._current_template.fields[i] = field
@@ -301,145 +302,275 @@ class MainWindow(QMainWindow):
             self.design_mode.update_field(field)
             self._mark_modified()
 
-    def _on_field_deleted(self, field_id: str):
-        """字段被删除"""
-        if self._current_template:
-            self._current_template.fields = [
-                f for f in self._current_template.fields if f.id != field_id
-            ]
-            self.design_mode.remove_field(field_id)
-            self._mark_modified()
-
     def _on_field_focus_requested(self, field_id: str):
-        """请求聚焦某个字段"""
         if self._current_template:
-            for f in self._current_template.fields:
-                if f.id == field_id:
-                    self.design_mode.set_current_page(f.page)
-                    self.design_mode.select_field(field_id)
-                    break
+            self.design_mode.select_field(field_id)
 
-    def _on_fill_data_changed(self, values: dict):
-        """填写数据变更"""
-        if self._current_record:
-            self._current_record.values.update(values)
-            self._mark_modified()
+    def _on_field_delete_requested(self, field_id: str):
+        self.design_mode.canvas.remove_field(field_id)
+        # canvas 会发射 field_deleted → _on_field_deleted_in_canvas 完成清理
+
+    def _on_field_duplicate_requested(self, field_id: str):
+        self.design_mode.canvas.select_field_on_page(field_id)
+        self.design_mode.canvas.duplicate_selected_field()
+
+    # ── 填写模式信号 ──────────────────────────────
+
+    def _on_field_selected_in_fill(self, field_id: str):
+        self.field_fill_panel.set_current_field(field_id)
 
     def _on_field_value_changed(self, field_id: str, value: str):
-        """单个字段值变更"""
         if self._current_record:
             self._current_record.values[field_id] = value
-            # 同步到画布预览
+            self.field_fill_panel.sync_value(field_id, value)
             self.fill_mode.update_field_value(field_id, value)
+            self._mark_modified()
 
     def _on_tab_next(self):
-        """TAB 跳转到下一个字段"""
         self.fill_mode.focus_next_field()
 
-    def _sync_record_from_panel(self):
-        """从填写面板收集最新值，同步到 record"""
+    def _on_tab_prev(self):
+        self.fill_mode.focus_prev_field()
+
+    def _flush_record(self):
+        """把面板当前值收进记录对象"""
         if self._current_record:
-            panel_values = self.field_fill_panel.get_current_values()
-            self._current_record.values.update(panel_values)
+            self._current_record.values.update(self.field_fill_panel.get_current_values())
+
+    # ── 记录管理 ──────────────────────────────────
+
+    def _on_record_selected(self, record_id: str):
+        if not self._current_template:
+            return
+        self._flush_record()
+        record = self.record_manager.get(self._current_template.id, record_id)
+        if record is None:
+            return
+        self._current_record = record
+        self.fill_mode.set_record(record)
+        self.field_fill_panel.load_fields(self._current_template, record)
+        self._refresh_records()
+        self._set_status(f"已切换到「{record.name or '未命名记录'}」")
+
+    def _on_record_new(self):
+        if not self._current_template:
+            return
+        self._flush_record()
+        default = self.record_manager.next_name(self._current_template.id)
+        name, ok = QInputDialog.getText(
+            self, "新建填写记录",
+            "这份记录的用途？（例如：张三的报销单）",
+            text=default,
+        )
+        if not ok:
+            return
+        record = self.record_manager.create(
+            self._current_template.id, name.strip() or default
+        )
+        self.record_manager.save(record)
+        self._current_record = record
+        self.fill_mode.set_record(record)
+        self.field_fill_panel.load_fields(self._current_template, record)
+        self._refresh_records()
+        self._set_status(f"已新建记录「{record.name}」，开始填写吧")
+
+    def _on_record_rename(self, record_id: str):
+        if not self._current_template:
+            return
+        record = self.record_manager.get(self._current_template.id, record_id)
+        if record is None:
+            return
+        name, ok = QInputDialog.getText(
+            self, "重命名记录", "记录名称：", text=record.name
+        )
+        if ok and name.strip():
+            self.record_manager.rename(self._current_template.id, record_id, name.strip())
+            self._refresh_records()
+
+    def _on_record_delete(self, record_id: str):
+        if not self._current_template:
+            return
+        records = self.record_manager.list_for_template(self._current_template.id)
+        target = next((r for r in records if r.id == record_id), None)
+        if target is None:
+            return
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定删除记录「{target.name or '未命名记录'}」吗？\n此操作无法恢复。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self.record_manager.delete(self._current_template.id, record_id)
+        if self._current_record and self._current_record.id == record_id:
+            remaining = self.record_manager.list_for_template(self._current_template.id)
+            if remaining:
+                self._current_record = remaining[0]
+            else:
+                self._current_record = self.record_manager.create(
+                    self._current_template.id,
+                    self.record_manager.next_name(self._current_template.id),
+                )
+            self.fill_mode.set_record(self._current_record)
+            self.field_fill_panel.load_fields(self._current_template, self._current_record)
+        self._refresh_records()
+
+    # ── 保存 / 模式互切 ───────────────────────────
+
+    def _save_template(self):
+        if self._current_template:
+            self.template_manager.update(self._current_template)
+            self._clear_modified()
+            self._set_status(f"模板已保存 - {self._current_template.name}")
+
+    def _on_design_to_fill(self):
+        if self._current_template:
+            self._save_template()
+            fresh = self.template_manager.get(self._current_template.id)
+            self._enter_fill_mode(fresh or self._current_template)
+
+    def _on_fill_to_design(self):
+        if self._current_template:
+            if self._current_record:
+                self._flush_record()
+                self.record_manager.save(self._current_record)
+            fresh = self.template_manager.get(self._current_template.id)
+            self._enter_design_mode(fresh or self._current_template)
 
     def _on_save_record(self):
-        """保存填写记录"""
         if self._current_record and self._current_template:
-            self._sync_record_from_panel()  # 先同步面板值
+            self._flush_record()
             self.record_manager.save(self._current_record)
-            self._set_status(f"已保存 - {self._current_template.name}")
             self._clear_modified()
+            self._set_status(f"草稿已保存 - {self._current_template.name}")
 
     def _on_save_shortcut(self):
-        """Ctrl+S 保存"""
         if self.center_stack.currentIndex() == self.MODE_DESIGN:
             self._save_template()
         elif self.center_stack.currentIndex() == self.MODE_FILL:
             self._on_save_record()
 
+    # ── 必填校验 ──────────────────────────────────
+
+    def _missing_required(self) -> list:
+        self._flush_record()
+        values = self._current_record.values if self._current_record else {}
+        missing = []
+        if self._current_template:
+            for f in self._current_template.fields:
+                if not f.required:
+                    continue
+                v = values.get(f.id, f.default_value or "")
+                if f.field_type == "checkbox":
+                    filled = v.lower() in ("true", "1", "yes", "√", "✓", "是")
+                else:
+                    filled = bool(v and str(v).strip())
+                if not filled:
+                    missing.append(f)
+        return missing
+
+    def _confirm_required(self) -> bool:
+        """导出/打印前检查必填项；返回 True 表示可以继续"""
+        missing = self._missing_required()
+        if not missing:
+            return True
+        names = "、".join(f.name for f in missing[:6])
+        more = f"…（共 {len(missing)} 项）" if len(missing) > 6 else ""
+        reply = QMessageBox.question(
+            self,
+            "还有必填项未完成",
+            f"以下必填项还没有填写：\n{names}{more}\n\n仍然导出吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            return True
+        # 跳到第一个未填项
+        self.fill_mode.canvas.select_field_on_page(missing[0].id)
+        self.field_fill_panel.set_current_field(missing[0].id)
+        return False
+
+    # ── 预览 / 打印 / 导出 ────────────────────────
+
     def _on_preview(self):
-        """预览填好的 PDF"""
         if not self._current_template or not self._current_record:
             return
-        self._sync_record_from_panel()  # 确保拿到最新面板值
+        self._flush_record()
         from app.ui.preview_dialog import PreviewDialog
-        dialog = PreviewDialog(self._current_template, self._current_record, self.template_manager, self)
+        dialog = PreviewDialog(
+            self._current_template, self._current_record, self.template_manager, self
+        )
         dialog.exec()
 
     def _on_print(self):
-        """打印"""
         if not self._current_template or not self._current_record:
             return
-        self._sync_record_from_panel()  # 确保拿到最新面板值
+        if not self._confirm_required():
+            return
+        self._flush_record()
         from app.ui.print_helper import print_filled_pdf
-        print_filled_pdf(self._current_template, self._current_record, self.template_manager, self)
+        print_filled_pdf(
+            self._current_template, self._current_record, self.template_manager, self
+        )
 
     def _on_export_pdf(self):
-        """导出填好的 PDF"""
         if not self._current_template or not self._current_record:
             return
-        self._sync_record_from_panel()  # 确保拿到最新面板值
-        from PySide6.QtWidgets import QFileDialog
+        if not self._confirm_required():
+            return
+        self._flush_record()
         filepath, _ = QFileDialog.getSaveFileName(
-            self, "导出填好的PDF", f"{self._current_template.name}_已填写.pdf", "PDF文件 (*.pdf)"
+            self, "导出填好的 PDF",
+            f"{self._current_template.name}_已填写.pdf",
+            "PDF 文件 (*.pdf)",
         )
         if filepath:
             from app.core.pdf_engine import burn_text
             pdf_path = self.template_manager.get_pdf_path(self._current_template.id)
-            burn_text(
-                pdf_path,
-                self._current_template.fields,
-                self._current_record.values,
-                self._current_template.page_settings,
-                filepath,
-            )
-            self._set_status(f"PDF 已导出 - {filepath}")
+            try:
+                burn_text(
+                    pdf_path,
+                    self._current_template.fields,
+                    self._current_record.values,
+                    self._current_template.page_settings,
+                    filepath,
+                )
+                self._set_status(f"PDF 已导出 - {filepath}")
+            except Exception as e:
+                QMessageBox.critical(self, "导出失败", str(e))
+
+    # ── 撤销 / 重做 ───────────────────────────────
 
     def _on_undo(self):
-        """撤销"""
         if self.center_stack.currentIndex() == self.MODE_DESIGN:
             self.design_mode.undo()
 
     def _on_redo(self):
-        """重做"""
         if self.center_stack.currentIndex() == self.MODE_DESIGN:
             self.design_mode.redo()
 
-    # ── 辅助方法 ──────────────────────────────────
+    # ── 辅助 ──────────────────────────────────────
 
     def _mark_modified(self):
-        """标记为已修改（标题栏显示 *）"""
         title = self.windowTitle()
-        if not title.startswith("*"):
-            self.setWindowTitle(f"* {title}")
+        if not title.startswith("* "):
+            self.setWindowTitle("* " + title)
 
     def _clear_modified(self):
-        """清除修改标记"""
         title = self.windowTitle()
         if title.startswith("* "):
             self.setWindowTitle(title[2:])
 
     def _set_status(self, message: str):
-        """设置状态栏消息"""
         self._status_label.setText(message)
 
     def closeEvent(self, event):
-        """关闭窗口时检查未保存的修改"""
-        if self.windowTitle().startswith("* "):
-            reply = QMessageBox.question(
-                self,
-                "未保存的修改",
-                "有未保存的修改，是否保存后退出？",
-                QMessageBox.StandardButton.Save
-                | QMessageBox.StandardButton.Discard
-                | QMessageBox.StandardButton.Cancel,
-            )
-            if reply == QMessageBox.StandardButton.Save:
-                self._on_save_shortcut()
-                event.accept()
-            elif reply == QMessageBox.StandardButton.Discard:
-                event.accept()
-            else:
-                event.ignore()
-        else:
-            event.accept()
+        # 退出前自动保存，避免丢数据
+        try:
+            if self.center_stack.currentIndex() == self.MODE_DESIGN and self._current_template:
+                self._save_template()
+            if self.center_stack.currentIndex() == self.MODE_FILL and self._current_record:
+                self._flush_record()
+                self.record_manager.save(self._current_record)
+        except Exception:
+            pass
+        event.accept()

@@ -1,9 +1,11 @@
-"""狸猫猫的表单填写工具 — 程序入口"""
+"""狸猫猫表单 — 程序入口"""
 
 import sys
 import os
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QFont
+
+from app.ui.theme import APP_STYLESHEET
 from app.ui.main_window import MainWindow
 
 
@@ -17,12 +19,12 @@ def get_data_dir() -> str:
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("狸猫猫的表单填写工具")
+    app.setApplicationName("pdf-form-filler")
+    app.setApplicationDisplayName("狸猫猫表单")
     app.setOrganizationName("FormFiller")
-
-    # 设置默认字体
-    font = QFont("Microsoft YaHei", 10)
-    app.setFont(font)
+    app.setStyle("Fusion")
+    app.setFont(QFont("Microsoft YaHei", 10))
+    app.setStyleSheet(APP_STYLESHEET)
 
     data_dir = get_data_dir()
     window = MainWindow(data_dir)

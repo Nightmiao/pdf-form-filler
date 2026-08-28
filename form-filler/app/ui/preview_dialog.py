@@ -1,10 +1,15 @@
-"""预览对话框 — 弹窗显示填好的 PDF 预览"""
+"""预览对话框 — 弹窗显示填好的 PDF 效果，可直接导出或打印"""
 
 import tempfile
 import os
-from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QScrollArea
+from PySide6.QtWidgets import (
+    QDialog, QVBoxLayout, QLabel, QScrollArea, QWidget,
+    QHBoxLayout, QPushButton, QFileDialog, QMessageBox, QStyle, QApplication,
+)
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+
+from app.ui.theme import apply_role, icon_of
+from app.core.pdf_engine import burn_text, pdf_to_images
 
 
 class PreviewDialog(QDialog):
@@ -15,79 +20,107 @@ class PreviewDialog(QDialog):
         self._template = template
         self._record = record
         self._template_manager = template_manager
+        self._output_path = ""
         self._setup_ui()
+        self._build_preview()
 
     def _setup_ui(self):
         self.setWindowTitle(f"预览 - {self._template.name}")
-        self.resize(800, 1000)
+        screen = QApplication.primaryScreen().availableGeometry() if QApplication.primaryScreen() else None
+        if screen:
+            self.resize(
+                min(900, screen.width() - 160),
+                min(1000, screen.height() - 160),
+            )
+        else:
+            self.resize(820, 940)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
 
-        # 诊断信息
-        field_count = len(self._template.fields)
-        value_count = len(self._record.values)
-        has_values = any(v for v in self._record.values.values() if v)
-        diag_text = f"字段数: {field_count} | 记录值数: {value_count} | 有非空值: {has_values}"
-        info = QLabel(diag_text)
-        info.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        info.setStyleSheet("background: #fff3cd; color: #856404; padding: 6px; font-size: 12px; border-radius: 3px;")
-        layout.addWidget(info)
+        head = QHBoxLayout()
+        info = QLabel(
+            f"{self._template.name} · 共 {self._template.page_count} 页 · "
+            f"填写内容将烧录进 PDF（原始文件不受影响）"
+        )
+        info.setProperty("role", "hint")
+        head.addWidget(info)
+        head.addStretch()
+        layout.addLayout(head)
 
-        # 滚动区域
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        self._content = QWidget()
+        self._content_layout = QVBoxLayout(self._content)
+        self._content_layout.setSpacing(10)
+        scroll.setWidget(self._content)
+        layout.addWidget(scroll, stretch=1)
 
-        # 生成预览
-        from app.core.pdf_engine import burn_text, pdf_to_images
+        btns = QHBoxLayout()
+        btns.setSpacing(8)
+        btns.addStretch()
+        export_btn = QPushButton("导出 PDF")
+        apply_role(export_btn, "primary")
+        export_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_DialogSaveButton))
+        export_btn.clicked.connect(self._export)
+        btns.addWidget(export_btn)
+        print_btn = QPushButton("打印")
+        print_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_ComputerIcon))
+        print_btn.clicked.connect(self._print)
+        btns.addWidget(print_btn)
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(self.accept)
+        btns.addWidget(close_btn)
+        layout.addLayout(btns)
+
+        self.finished.connect(self._cleanup)
+
+    def _build_preview(self):
         pdf_path = self._template_manager.get_pdf_path(self._template.id)
-
-        tmp_file = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-        tmp_file.close()
-        output_path = burn_text(
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        tmp.close()
+        self._output_path = burn_text(
             pdf_path,
             self._template.fields,
             self._record.values,
             self._template.page_settings,
-            tmp_file.name,
+            tmp.name,
         )
 
-        # 检查输出的 PDF 是否包含了文字
-        import fitz
-        check_doc = fitz.open(output_path)
-        check_text = ""
-        for pn in range(check_doc.page_count):
-            check_text += check_doc[pn].get_text()
-        check_doc.close()
-
-        has_output = len(check_text.strip()) > 0
-        result_text = f"烧录后PDF文本: {'有内容' if has_output else '【空】'} ({len(check_text)} 字符)"
-        result = QLabel(result_text)
-        result.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        color = "#155724" if has_output else "#721c24"
-        bg = "#d4edda" if has_output else "#f8d7da"
-        result.setStyleSheet(f"background: {bg}; color: {color}; padding: 6px; font-size: 12px; border-radius: 3px;")
-        layout.addWidget(result)
-
-        # 渲染为图片（用 150 DPI 保证文字清晰可见）
-        images = pdf_to_images(output_path, dpi=150)
-
-        from PySide6.QtWidgets import QWidget
-        content = QWidget()
-        cl = QVBoxLayout(content)
+        images = pdf_to_images(self._output_path, dpi=140)
         for i, img in enumerate(images):
+            page_label = QLabel(f"第 {i + 1} 页")
+            page_label.setProperty("role", "meta")
+            self._content_layout.addWidget(page_label)
             lbl = QLabel()
             lbl.setPixmap(img)
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            cl.addWidget(lbl)
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
+            self._content_layout.addWidget(lbl)
 
-        self._tmp_file = tmp_file.name
-        self.finished.connect(self._cleanup)
+    def _export(self):
+        default_name = f"{self._template.name}_已填写.pdf"
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "导出填好的 PDF", default_name, "PDF 文件 (*.pdf)"
+        )
+        if not filepath:
+            return
+        try:
+            import shutil
+            shutil.copy2(self._output_path, filepath)
+            QMessageBox.information(self, "导出成功", f"PDF 已保存到：\n{filepath}")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", str(e))
+
+    def _print(self):
+        from app.ui.print_helper import print_filled_pdf
+        print_filled_pdf(
+            self._template, self._record, self._template_manager, self
+        )
 
     def _cleanup(self):
-        if hasattr(self, '_tmp_file') and os.path.exists(self._tmp_file):
+        if self._output_path and os.path.exists(self._output_path):
             try:
-                os.unlink(self._tmp_file)
+                os.unlink(self._output_path)
             except OSError:
                 pass

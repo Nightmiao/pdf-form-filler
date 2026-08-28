@@ -90,6 +90,26 @@ class RecordManager:
         records.sort(key=lambda r: r.updated_at, reverse=True)
         return records
 
+    def rename(self, template_id: str, record_id: str, new_name: str):
+        """重命名填写记录"""
+        record = self.get(template_id, record_id)
+        if record:
+            record.name = new_name.strip()
+            self.save(record)
+
+    def next_name(self, template_id: str) -> str:
+        """给新记录生成一个默认名称：记录 1、记录 2……"""
+        existing = self.list_for_template(template_id)
+        used = set()
+        for r in existing:
+            used.add(r.name)
+        n = len(existing) + 1
+        name = f"记录 {n}"
+        while name in used:
+            n += 1
+            name = f"记录 {n}"
+        return name
+
     def delete(self, template_id: str, record_id: str):
         """删除填写记录"""
         json_path = self._json_path(template_id, record_id)

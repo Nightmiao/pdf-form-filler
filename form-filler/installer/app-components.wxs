@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <ComponentGroup Id="AppComponents" Directory="INSTALLFOLDER">
+      <!-- 自动采集 staging 目录下所有文件，保持目录结构 -->
+      <Files Include="$(var.StagingDir)\**\*" />
+    </ComponentGroup>
+  </Fragment>
+</Wix>
