@@ -37,6 +37,11 @@ class PreviewDialog(QDialog):
         self._images = []
         self._page_labels = []
         self._zoom_factor = 1.0  # 1.0 = 适应宽度
+        # 真防抖：成员级 singleShot 定时器，连续 resize 时不断重启计时
+        self._resize_timer = QtCore.QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(80)
+        self._resize_timer.timeout.connect(self._apply_zoom)
         self._setup_ui()
         try:
             self._build_preview()
@@ -201,8 +206,8 @@ class PreviewDialog(QDialog):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # 防抖：拖拽窗口边缘时避免逐帧全量重缩放每页大图
-        QtCore.QTimer.singleShot(80, self._apply_zoom)
+        # 真防抖：重启计时器，只有停止拖拽 80ms 后才执行一次全量重缩放
+        self._resize_timer.start()
 
     # ── 导出 / 打印 ───────────────────────────────
 

@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+defaults:
+  run:
+    working-directory: form-filler
+
 jobs:
   test-qt6:
     name: PySide6 (Qt6) / Python 3.12
@@ -16,7 +20,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install PySide6 PyMuPDF
+      - run: pip install -r requirements.txt
       - run: python tests/smoke_test.py
       - run: python tests/audit_verify.py
 
@@ -31,6 +35,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.9"
-      - run: pip install PySide2==5.15.2.1 PyMuPDF==1.23.26 PyMuPDFb==1.23.22
+      - run: pip install -r requirements-win7.txt PyMuPDFb==1.23.22
       - run: python tests/smoke_test.py
       - run: python tests/audit_verify.py
