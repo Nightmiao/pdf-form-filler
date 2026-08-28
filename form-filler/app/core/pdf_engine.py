@@ -8,6 +8,9 @@
   不再四舍五入到 90°（insert_textbox 只用于 90° 整数倍的快速路径）。
 """
 
+from __future__ import annotations
+
+
 import os
 import math
 import fitz  # PyMuPDF
@@ -73,11 +76,22 @@ def normalize_angle(angle: float) -> float:
 # ── PDF 源（复用同一个已打开的文档，避免每页都重新开文件）─────────
 
 class PdfSource:
-    """一个 PDF 文件的句柄：页数/尺寸/渲染都从这里走"""
+    """一个 PDF 文件的句柄：页数/尺寸/渲染都从这里走
+
+    实现说明：
+    - 用 fitz.open(stream=文件字节) 从内存打开 —— 不占用磁盘文件句柄，
+      Windows 上用户可以随时删除/替换原始 PDF 文件；
+    - 渲染方法加 threading.Lock —— MuPDF 的 Document 不是线程安全的，
+      GUI 线程同步渲染与后台预取线程共用同一句柄时串行化访问。
+    """
 
     def __init__(self, pdf_path: str):
+        import threading
         self.path = pdf_path
-        self.doc = fitz.open(pdf_path)
+        with open(pdf_path, "rb") as f:
+            data = f.read()
+        self.doc = fitz.open(stream=data, filetype="pdf")
+        self._lock = threading.Lock()
 
     @property
     def page_count(self) -> int:
@@ -88,19 +102,21 @@ class PdfSource:
         return QSizeF(rect.width, rect.height)
 
     def render_page_bytes(self, page_num: int, dpi: int) -> bytes:
-        """渲染一页为 PNG 字节流（可在工作线程调用）"""
-        zoom = dpi / 72.0
-        pix = self.doc[page_num].get_pixmap(matrix=fitz.Matrix(zoom, zoom))
-        return pix.tobytes("png")
+        """渲染一页为 PNG 字节流（可在工作线程调用，内部加锁）"""
+        with self._lock:
+            zoom = dpi / 72.0
+            pix = self.doc[page_num].get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+            return pix.tobytes("png")
 
     def render_all_page_bytes(self, dpi: int) -> list[bytes]:
-        """一次打开渲染全部页（批量缩略图用）"""
+        """一次打开渲染全部页（批量缩略图用，内部加锁）"""
         out = []
         zoom = dpi / 72.0
         mat = fitz.Matrix(zoom, zoom)
-        for page_num in range(self.page_count):
-            pix = self.doc[page_num].get_pixmap(matrix=mat)
-            out.append(pix.tobytes("png"))
+        with self._lock:
+            for page_num in range(self.page_count):
+                pix = self.doc[page_num].get_pixmap(matrix=mat)
+                out.append(pix.tobytes("png"))
         return out
 
     def close(self):
@@ -236,7 +252,7 @@ def _burn_field(doc, field, values, page_settings, cjk_font):
             font_name=font_name,
             font_size=font_size,
             align=align_map.get(align, 0),
-            rotation=_round_rotation(rotation),
+            rotation=_round_rotation(-rotation),
         )
     else:
         # 精确路径：先在"显示坐标系"（页面矫正角后的轴对齐矩形）里排版，
@@ -304,7 +320,9 @@ def _insert_text_rotated(
             pivot, line,
             fontname=font_name,
             fontsize=size,
-            morph=(pivot, fitz.Matrix(rotation)),
+            # Qt setRotation(+θ)=视觉顺时针；PyMuPDF morph Matrix(+θ)=视觉逆时针，
+            # 取负号让导出与画布显示方向一致
+            morph=(pivot, fitz.Matrix(-rotation)),
         )
 
 

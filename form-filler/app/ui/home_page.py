@@ -217,7 +217,6 @@ class HomePage(QWidget):
         self.template_manager = template_manager
         self._templates: list[TemplateMeta] = []
         self._cards: dict[str, TemplateCard] = {}  # 卡片复用缓存
-        self._thumb_cache: dict[str, QPixmap] = {}  # 缩略图 pixmap 缓存
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(self.SEARCH_DEBOUNCE_MS)
@@ -440,7 +439,14 @@ class HomePage(QWidget):
             std_button("Yes") | std_button("No"),
         )
         if reply == std_button("Yes"):
-            self.template_manager.delete(template.id)
+            try:
+                self.template_manager.delete(template.id)
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "删除失败",
+                    f"模板删除失败：\n{e}\n\n如果正在其他程序里打开这个 PDF，请先关闭。",
+                )
+                return
             self._cards.pop(template.id, None)
             self.template_deleted.emit(template.id)
             self.refresh()

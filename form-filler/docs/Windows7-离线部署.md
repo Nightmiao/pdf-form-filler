@@ -12,6 +12,10 @@
 
 代码通过 app/qt.py 兼容层自动适配两套环境：**同一份源码，开发机上用 PySide6 开发测试，目标机上跑 PySide2 版本，不需要改任何代码**。全部界面代码都从 app.qt 导入 Qt 类，不直接 import PySide6/PySide2。
 
+> **验证状态**：本仓库已在 **Python 3.8 + PySide2 5.15.2.1 + PyMuPDF 1.23.26** 环境完整跑通全部回归测试
+> （tests/smoke_test.py 与 tests/audit_verify.py，Qt5 分支真实验证），开发机 PySide6 环境同样全绿。
+> 目标机锁定 Python 3.9.13（与 3.8 行为一致）。
+
 ## 二、目标机（Windows 7）系统要求
 
 - Windows 7 **SP1**，32 位或 64 位均可；

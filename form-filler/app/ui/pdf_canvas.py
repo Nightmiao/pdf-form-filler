@@ -203,10 +203,18 @@ class PdfCanvas(QGraphicsView):
             self._page_size_pdf.pop(oldest, None)
 
     def _ensure_page_pixmap(self, page_num: int):
-        """确保某页像素已渲染（当前页同步；其余走后台预取）"""
+        """确保某页像素已渲染（当前页同步；其余走后台预取）
+
+        关键：目标页的后台渲染任务还在途时也必须同步兜底渲染，
+        否则 show_page 随后取缓存会 KeyError（快速翻页必现崩溃）。
+        """
         if page_num in self._page_pixmaps:
             return
-        if page_num == self._current_page or not self._page_pixmaps:
+        if (
+            page_num == self._current_page
+            or page_num in self._render_jobs
+            or not self._page_pixmaps
+        ):
             self._render_page_sync(page_num)
         else:
             self._request_render(page_num)
@@ -261,10 +269,20 @@ class PdfCanvas(QGraphicsView):
                 if page_num == self._current_page:
                     self._update_page_display()
 
-    def closeEvent(self, event):
+    def release_pdf(self):
+        """释放 PDF 资源（返回首页时调用，释放内存与渲染任务）"""
+        self._render_jobs.clear()
+        self._page_pixmaps.clear()
+        self._page_size_pdf.clear()
+        self._scene.clear()
+        self._field_items.clear()
+        self._selected_field_item = None
         if self._source is not None:
             self._source.close()
             self._source = None
+
+    def closeEvent(self, event):
+        self.release_pdf()
         super().closeEvent(event)
 
     def _current_page_rotation(self) -> float:
@@ -1024,6 +1042,15 @@ class PdfCanvas(QGraphicsView):
             event.accept()
             return
         super().keyReleaseEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._fit_scale > 0 and self._zoom == 1.0:
+            rect = self._scene.sceneRect()
+            if not rect.isEmpty():
+                self.fitInView(rect, KEEP_ASPECT)
+                self._fit_scale = self.transform().m11()
+                self._apply_zoom()
 
     # ── 滚轮 ──────────────────────────────────────
 

@@ -1,5 +1,8 @@
 """狸猫猫表单 — 程序入口"""
 
+from __future__ import annotations
+
+
 import sys
 import os
 from app.qt import QtWidgets, QtGui

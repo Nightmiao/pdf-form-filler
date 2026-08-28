@@ -32,7 +32,7 @@ Signal = QtCore.Signal
 QDate = QtCore.QDate
 QColor = QtGui.QColor
 
-from app.ui.theme import apply_role, icon_of
+from app.ui.theme import apply_role, icon_of, COLORS
 from app.core.field_model import FieldDefinition, FillRecord
 
 DATE_MIN = QDate(1900, 1, 1)
@@ -218,6 +218,17 @@ class FieldDesignPanel(QWidget):
         self._field_list.blockSignals(False)
         self._update_list_hint()
 
+    def sync_field_object(self, field: FieldDefinition):
+        """画布侧字段对象更新后（如旋转/移动），同步面板缓存，避免旧值回写覆盖"""
+        for i, cur in enumerate(self._fields):
+            if cur.id == field.id:
+                self._fields[i] = field
+                break
+        if self._current_field is not None and self._current_field.id == field.id:
+            self._current_field = field
+            self._populate_properties(field)
+        self._update_current_row_text()
+
     def _update_current_row_text(self):
         """属性修改时只更新当前行的显示文本，避免整表重建丢选中"""
         if self._current_field is None:
@@ -303,10 +314,11 @@ class FieldDesignPanel(QWidget):
     # ── 信号处理 ──────────────────────────────────
 
     def _on_prop_changed(self, *args):
+        """属性变更 — 只更新当前行文本，保留选中状态"""
         if self._current_field is None:
             return
         self._apply_properties()
-        self._refresh_field_list()
+        self._update_current_row_text()
         self.field_updated.emit(self._current_field)
 
     def _on_type_changed(self, idx: int):
@@ -428,7 +440,7 @@ class FieldFillPanel(QWidget):
         # ── 当前项 ──
         field_group = QGroupBox("当前填写项")
         self._field_title = QLabel("请选择一项")
-        self._field_title.setStyleSheet("font-weight: 700; font-size: 14px; color: #1F2329;")
+        self._field_title.setStyleSheet(f"font-weight: 700; font-size: 14px; color: {COLORS['text']};")
         self._field_hint = QLabel("")
         self._field_hint.setProperty("role", "hint")
         self._field_hint.setWordWrap(True)
@@ -663,6 +675,7 @@ class FieldFillPanel(QWidget):
         widget.installEventFilter(self)
         self._input_host.addWidget(widget)
         self._current_widget = widget
+        widget.setFocus()  # 点击画布字段或 Tab 跳转后可直接输入，无需再点一下
         self._update_progress()
 
     def _on_widget_changed(self, field_id: str):

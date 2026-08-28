@@ -13,12 +13,30 @@ QFontDatabase = QtGui.QFontDatabase
 try:
     from PySide6.QtTest import QTest  # 仅开发机回归测试使用
 except ImportError:
-    QTest = None
+    try:
+        from PySide2.QtTest import QTest
+    except ImportError:
+        QTest = None
 
 app = QApplication(sys.argv)
+
+
+def qwait(ms: int):
+    """Qt5/Qt6 通用的等待：优先 QTest.qWait，否则手动泵事件"""
+    if QTest is not None and hasattr(QTest, "qWait"):
+        QTest.qWait(ms)
+        return
+    import time
+    deadline = time.time() + ms / 1000.0
+    while time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+
+
 from app.ui.theme import APP_STYLESHEET
-if not any("YaHei" in f for f in QFontDatabase.families()):
-    QFontDatabase.addApplicationFont("C:/Windows/Fonts/msyh.ttc")
+_qfd = QFontDatabase()
+if not any("YaHei" in f for f in _qfd.families()):
+    _qfd.addApplicationFont("C:/Windows/Fonts/msyh.ttc")
 app.setFont(QFont("Microsoft YaHei", 10))
 app.setStyle("Fusion")
 app.setStyleSheet(APP_STYLESHEET)
@@ -201,9 +219,22 @@ rot_span = next((s for s in spans if "旋转" in s["text"]), None)
 assert rot_span is not None, "rotated text missing"
 line = next(l for b in d1[0].get_text("dict")["blocks"] for l in b.get("lines", []) if any("旋转" in s["text"] for s in l["spans"]))
 assert abs(line["dir"][0] - math.cos(math.radians(15))) < 0.01, f"15deg dir wrong: {line['dir']}"
-assert abs(line["dir"][1] + math.sin(math.radians(15))) < 0.01, f"15deg dir wrong: {line['dir']}"
+# 画布 Qt +15°=视觉顺时针 → 导出 dir 应为 (cos15, +sin15)
+assert abs(line["dir"][1] - math.sin(math.radians(15))) < 0.01, f"15deg dir mirrored: {line['dir']}"
 d1.close()
 print("arbitrary rotation export OK (15deg)")
+
+# ── 90° 整数倍快速路径方向（画布 +90°=视觉顺时针 → dir=(0,+1)）──
+rot90 = FieldDefinition(name="竖排", field_type="text", page=0, rect=(350, 450, 460, 470), rotation=90.0, tab_order=101)
+out90 = os.path.join(data_dir, "rot90.pdf")
+burn_text(pdf_path, list(t.fields) + [rot90], {**w._current_record.values, rot90.id: "竖排测试"}, t.page_settings, out90)
+d90 = fitz.open(out90)
+# 竖排时每个字是独立 span，找包含"竖"的行验证方向
+line90 = next(l for b in d90[0].get_text("dict")["blocks"] for l in b.get("lines", []) if any("竖" in sp["text"] for sp in l["spans"]))
+assert abs(line90["dir"][0]) < 0.01, f"90deg dir wrong: {line90['dir']}"
+assert abs(line90["dir"][1] - 1.0) < 0.01, f"90deg dir mirrored: {line90['dir']}"
+d90.close()
+print("90deg fast path direction OK")
 
 # ── #7/#10 页面矫正角写入导出（-3° 字段）──
 page_settings = copy.deepcopy(t.page_settings)
@@ -216,7 +247,8 @@ burn_text(pdf_path, fields2, values2, page_settings, out2)
 d2 = fitz.open(out2)
 line2 = next(l for b in d2[0].get_text("dict")["blocks"] for l in b.get("lines", []) if any("矫正" in s["text"] for s in l["spans"]))
 assert abs(line2["dir"][0] - math.cos(math.radians(3))) < 0.01, f"page-rot dir wrong: {line2['dir']}"
-assert abs(line2["dir"][1] - math.sin(math.radians(3))) < 0.01, f"page-rot dir wrong: {line2['dir']}"
+# 页面矫正 +3°、字段存储 -3°：导出文字应与表格线平行 → dir=(cos3, -sin3)
+assert abs(line2["dir"][1] + math.sin(math.radians(3))) < 0.01, f"page-rot dir mirrored: {line2['dir']}"
 d2.close()
 print("page rotation export OK")
 
@@ -274,7 +306,7 @@ from app.ui.thumbnail_bar import ThumbnailBar, _placeholder_pixmap
 tb = ThumbnailBar()
 tb.load_pages(t, pdf_path)
 for _ in range(60):
-    QTest.qWait(50)
+    qwait(50)
     if tb._job is None:
         break
 assert tb._job is None, "thumbnail job never finished"
@@ -290,7 +322,7 @@ w._show_home()
 app.processEvents()
 w.home_page.search_input.setText("报")
 assert w.home_page._search_timer.isActive(), "search not debounced"
-QTest.qWait(400)
+qwait(400)
 assert any("报销" in x.name for x in w.home_page._templates), "debounced search refresh failed"
 w.home_page.search_input.setText("")
 w.home_page.refresh()

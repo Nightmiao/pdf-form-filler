@@ -58,6 +58,10 @@
 离屏冒烟/回归测试覆盖：建模板 → 画字段 → 页面旋转精确换算 → 撤销/重做 → 排序同步 → 跨页 Tab → 填写/保存 → 烧录校验（含 15° 任意角度与页面矫正角导出）→ 记录切换持久化 → 非法字段防御 → 导出路径防覆盖 → 预览异常保护 → 缩略图异步渲染 → LRU 缓存 → 搜索防抖 → 必填校验，并输出各界面截图：
 
     venv\Scripts\python.exe tests\smoke_test.py
+    venv\Scripts\python.exe tests\audit_verify.py
+
+两套环境均已验证通过：开发机（PySide6/Qt6）与 Windows 7 兼容环境
+（Python 3.8/3.9 + PySide2/Qt5，可用 build_win7.bat 或离线 wheel 搭建）。
 
 ## 打包为 EXE（Windows）
 

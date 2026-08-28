@@ -7,7 +7,7 @@ import os
 
 from app.qt import (
     QtWidgets, QtCore, QtGui,
-    QAction, std_button, standard_key, dialog_exec,
+    QAction, std_button, standard_key, dialog_exec, msg_icon, msg_button_role,
 )
 
 QMainWindow = QtWidgets.QMainWindow
@@ -188,6 +188,9 @@ class MainWindow(QMainWindow):
 
         self._current_template = None
         self._current_record = None
+        # 释放两个画布的 PDF 资源（内存打开，退出编辑即释放）
+        self.design_mode.canvas.release_pdf()
+        self.fill_mode.canvas.release_pdf()
         self.center_stack.setCurrentIndex(self.MODE_HOME)
         self.left_panel.hide()
         self.right_panel.hide()
@@ -220,6 +223,7 @@ class MainWindow(QMainWindow):
                 record = self.record_manager.create(
                     template.id, self.record_manager.next_name(template.id)
                 )
+                self.record_manager.save(record)  # 立即落盘，下拉列表与退出恢复都有数据
         self._current_record = record
         self._reload_fill()
 
@@ -293,6 +297,8 @@ class MainWindow(QMainWindow):
                 if f.id == field.id:
                     self._current_template.fields[i] = field
                     break
+            # 同步面板缓存：否则面板旧对象回写会把画布改过的 rotation 等属性归零
+            self.field_design_panel.sync_field_object(field)
             self._mark_modified()
 
     def _on_field_deleted_in_canvas(self, field_id: str):
@@ -533,17 +539,23 @@ class MainWindow(QMainWindow):
             return True
         names = "、".join(f.name for f in missing[:6])
         more = f"…（共 {len(missing)} 项）" if len(missing) > 6 else ""
-        reply = QMessageBox.question(
-            self,
-            "还有必填项未完成",
-            f"以下必填项还没有填写：\n{names}{more}\n\n仍然导出吗？",
-            std_button("Yes") | std_button("No"),
-        )
-        if reply == std_button("Yes"):
+        box = QMessageBox(self)
+        box.setIcon(msg_icon("Warning"))
+        box.setWindowTitle("还有必填项未完成")
+        box.setText(f"以下必填项还没有填写：\n{names}{more}")
+        box.setInformativeText("可以先去补齐，也可以不填直接导出。")
+        go_btn = box.addButton("去填写", msg_button_role("ActionRole"))
+        export_btn = box.addButton("仍然导出", msg_button_role("AcceptRole"))
+        box.addButton("取消", msg_button_role("RejectRole"))
+        box.setDefaultButton(go_btn)
+        dialog_exec(box)
+        clicked = box.clickedButton()
+        if clicked is export_btn:
             return True
-        # 跳到第一个未填项
-        self.fill_mode.canvas.select_field_on_page(missing[0].id)
-        self.field_fill_panel.set_current_field(missing[0].id)
+        if clicked is go_btn:
+            # 跳到第一个未填项
+            self.fill_mode.canvas.select_field_on_page(missing[0].id)
+            self.field_fill_panel.set_current_field(missing[0].id)
         return False
 
     # ── 预览 / 打印 / 导出 ────────────────────────
@@ -570,16 +582,20 @@ class MainWindow(QMainWindow):
         )
 
     def _choose_export_path(self) -> str:
-        """选择导出路径；不允许覆盖模板原始 PDF"""
+        """选择导出路径；不允许覆盖模板原始 PDF；记住上次导出目录"""
         if self._current_template is None:
             return ""
         original = os.path.normcase(os.path.abspath(
             self.template_manager.pdf_path(self._current_template.id)
         ))
+        last_dir = self._settings.get("last_export_dir", "")
+        default_name = f"{self._current_template.name}_已填写.pdf"
+        if last_dir and os.path.isdir(last_dir):
+            default_name = os.path.join(last_dir, default_name)
         for attempt in range(2):
             filepath, _ = QFileDialog.getSaveFileName(
                 self, "导出填好的 PDF",
-                f"{self._current_template.name}_已填写.pdf",
+                default_name,
                 "PDF 文件 (*.pdf)",
             )
             if not filepath:
@@ -614,8 +630,23 @@ class MainWindow(QMainWindow):
                     filepath,
                 )
                 self._set_status(f"PDF 已导出 - {filepath}")
+                self._settings["last_export_dir"] = os.path.dirname(filepath)
+                save_settings(self.data_dir, self._settings)
+                self._notify_export_done(filepath)
             except Exception as e:
                 QMessageBox.critical(self, "导出失败", str(e))
+
+    def _notify_export_done(self, filepath: str):
+        """导出成功反馈：弹窗 + 可选打开所在文件夹"""
+        box = QMessageBox(self)
+        box.setIcon(msg_icon("Information"))
+        box.setWindowTitle("导出成功")
+        box.setText(f"PDF 已导出：\n{filepath}")
+        open_btn = box.addButton("打开所在文件夹", msg_button_role("ActionRole"))
+        box.addButton("完成", msg_button_role("AcceptRole"))
+        dialog_exec(box)
+        if box.clickedButton() is open_btn:
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(os.path.dirname(filepath)))
 
     # ── 撤销 / 重做 ───────────────────────────────
 

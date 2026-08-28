@@ -9,6 +9,9 @@
 Windows 7 部署细节见 docs/Windows7-离线部署.md。
 """
 
+from __future__ import annotations
+
+
 try:
     from PySide6 import QtCore, QtGui, QtWidgets, QtPrintSupport
     QT6 = True
@@ -82,6 +85,12 @@ def enum_of(owner, scoped_name, name):
 
 def std_button(name):
     return enum_of(QtWidgets.QMessageBox, "StandardButton", name)
+
+def msg_icon(name):
+    return enum_of(QtWidgets.QMessageBox, "Icon", name)
+
+def msg_button_role(name):
+    return enum_of(QtWidgets.QMessageBox, "ButtonRole", name)
 
 def dialog_accepted():
     return enum_of(QtWidgets.QDialog, "DialogCode", "Accepted")

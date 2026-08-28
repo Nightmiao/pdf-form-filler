@@ -4,6 +4,9 @@
 避免与 .lmt 导入导出逻辑重复。
 """
 
+from __future__ import annotations
+
+
 import os
 import json
 import shutil

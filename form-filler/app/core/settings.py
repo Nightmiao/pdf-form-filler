@@ -1,5 +1,8 @@
 """应用设置 — 保存在数据目录的 settings.json（如是否已完成新手引导）"""
 
+from __future__ import annotations
+
+
 import os
 import json
 

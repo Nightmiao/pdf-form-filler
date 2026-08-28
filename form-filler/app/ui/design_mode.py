@@ -98,35 +98,6 @@ class DesignMode(QWidget):
 
         main_bar.addSeparator()
 
-        # 缩放
-        self._zoom_out_btn = QPushButton("−")
-        apply_role(self._zoom_out_btn, "toolbar")
-        self._zoom_out_btn.setFixedWidth(30)
-        self._zoom_out_btn.setToolTip("缩小 (Ctrl+-)")
-        self._zoom_out_btn.clicked.connect(self._on_zoom_out)
-        main_bar.addWidget(self._zoom_out_btn)
-
-        self._zoom_label = QLabel("100%")
-        self._zoom_label.setFixedWidth(46)
-        self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._zoom_label.setStyleSheet(f"color:{COLORS['text_secondary']}; font-weight:600;")
-        main_bar.addWidget(self._zoom_label)
-
-        self._zoom_in_btn = QPushButton("＋")
-        apply_role(self._zoom_in_btn, "toolbar")
-        self._zoom_in_btn.setFixedWidth(30)
-        self._zoom_in_btn.setToolTip("放大 (Ctrl++)")
-        self._zoom_in_btn.clicked.connect(self._on_zoom_in)
-        main_bar.addWidget(self._zoom_in_btn)
-
-        self._fit_btn = QPushButton("适应窗口")
-        apply_role(self._fit_btn, "toolbar")
-        self._fit_btn.setToolTip("适应窗口 (Ctrl+0)")
-        self._fit_btn.clicked.connect(self._on_zoom_fit)
-        main_bar.addWidget(self._fit_btn)
-
-        main_bar.addSeparator()
-
         self._save_btn = QPushButton("保存")
         self._save_btn.setIcon(icon_of(self, "SP_DialogSaveButton"))
         self._save_btn.setToolTip("保存模板 (Ctrl+S)")
@@ -179,14 +150,39 @@ class DesignMode(QWidget):
         self._rotation_reset_btn.clicked.connect(self._on_rotation_reset)
         tools_bar.addWidget(self._rotation_reset_btn)
 
+        tools_bar.addSeparator()
+
+        # 缩放（放在第二行，主栏只保留核心操作，默认窗口下不再溢出折叠）
+        self._zoom_out_btn = QPushButton("−")
+        apply_role(self._zoom_out_btn, "toolbar")
+        self._zoom_out_btn.setFixedWidth(30)
+        self._zoom_out_btn.setToolTip("缩小 (Ctrl+-)")
+        self._zoom_out_btn.clicked.connect(self._on_zoom_out)
+        tools_bar.addWidget(self._zoom_out_btn)
+
+        self._zoom_label = QLabel("100%")
+        self._zoom_label.setFixedWidth(46)
+        self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._zoom_label.setStyleSheet(f"color:{COLORS['text_secondary']}; font-weight:600;")
+        tools_bar.addWidget(self._zoom_label)
+
+        self._zoom_in_btn = QPushButton("＋")
+        apply_role(self._zoom_in_btn, "toolbar")
+        self._zoom_in_btn.setFixedWidth(30)
+        self._zoom_in_btn.setToolTip("放大 (Ctrl++)")
+        self._zoom_in_btn.clicked.connect(self._on_zoom_in)
+        tools_bar.addWidget(self._zoom_in_btn)
+
+        self._fit_btn = QPushButton("适应窗口")
+        apply_role(self._fit_btn, "toolbar")
+        self._fit_btn.setToolTip("适应窗口 (Ctrl+0)")
+        self._fit_btn.clicked.connect(self._on_zoom_fit)
+        tools_bar.addWidget(self._fit_btn)
+
         from app.qt import QtWidgets
         stretch2 = QtWidgets.QWidget()
         stretch2.setSizePolicy(size_policy("Expanding"), size_policy("Preferred"))
         tools_bar.addWidget(stretch2)
-
-        hint = QLabel("在表格上按住鼠标左键拖拽，画出填写框")
-        hint.setProperty("role", "hint")
-        tools_bar.addWidget(hint)
 
         layout.addWidget(tools_bar)
 

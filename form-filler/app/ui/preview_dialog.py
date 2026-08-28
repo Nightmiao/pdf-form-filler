@@ -1,11 +1,12 @@
-"""预览对话框 — 弹窗显示填好的 PDF 效果，可直接导出或打印"""
+"""预览对话框 — 弹窗显示填好的 PDF 效果，可缩放、导出或打印"""
 
 from __future__ import annotations
 
-
 import tempfile
 import os
-from app.qt import QtWidgets, QtCore, Qt
+from app.qt import QtWidgets, QtCore, Qt, dialog_exec
+from app.ui.theme import apply_role, icon_of
+from app.core.pdf_engine import burn_text, pdf_to_images
 
 QDialog = QtWidgets.QDialog
 QVBoxLayout = QtWidgets.QVBoxLayout
@@ -18,12 +19,11 @@ QFileDialog = QtWidgets.QFileDialog
 QMessageBox = QtWidgets.QMessageBox
 QApplication = QtWidgets.QApplication
 
-from app.ui.theme import apply_role, icon_of
-from app.core.pdf_engine import burn_text, pdf_to_images
-
 
 class PreviewDialog(QDialog):
-    """填好的 PDF 预览对话框"""
+    """填好的 PDF 预览对话框（带缩放）"""
+
+    PREVIEW_DPI = 150
 
     def __init__(self, template, record, template_manager, parent=None):
         super().__init__(parent)
@@ -34,9 +34,13 @@ class PreviewDialog(QDialog):
         self._failed = False
         self._export_btn = None
         self._print_btn = None
+        self._images = []
+        self._page_labels = []
+        self._zoom_factor = 1.0  # 1.0 = 适应宽度
         self._setup_ui()
         try:
             self._build_preview()
+            self._apply_zoom()
         except Exception as e:
             # PDF 损坏等原因导致预览失败时，界面上给出反馈而不是静默崩溃
             self._failed = True
@@ -65,6 +69,7 @@ class PreviewDialog(QDialog):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
 
+        # 顶部：说明 + 缩放
         head = QHBoxLayout()
         info = QLabel(
             f"{self._template.name} · 共 {self._template.page_count} 页 · "
@@ -73,15 +78,42 @@ class PreviewDialog(QDialog):
         info.setProperty("role", "hint")
         head.addWidget(info)
         head.addStretch()
+
+        self._zoom_out_btn = QPushButton("−")
+        apply_role(self._zoom_out_btn, "toolbar")
+        self._zoom_out_btn.setFixedWidth(28)
+        self._zoom_out_btn.setToolTip("缩小")
+        self._zoom_out_btn.clicked.connect(self._zoom_out)
+        head.addWidget(self._zoom_out_btn)
+
+        self._zoom_label = QLabel("100%")
+        self._zoom_label.setFixedWidth(44)
+        self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._zoom_label.setStyleSheet("color:#374151; font-weight:600;")
+        head.addWidget(self._zoom_label)
+
+        self._zoom_in_btn = QPushButton("＋")
+        apply_role(self._zoom_in_btn, "toolbar")
+        self._zoom_in_btn.setFixedWidth(28)
+        self._zoom_in_btn.setToolTip("放大")
+        self._zoom_in_btn.clicked.connect(self._zoom_in)
+        head.addWidget(self._zoom_in_btn)
+
+        fit_btn = QPushButton("适应宽度")
+        apply_role(fit_btn, "toolbar")
+        fit_btn.setToolTip("恢复适应宽度")
+        fit_btn.clicked.connect(self._zoom_fit)
+        head.addWidget(fit_btn)
+
         layout.addLayout(head)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
         self._content = QWidget()
         self._content_layout = QVBoxLayout(self._content)
         self._content_layout.setSpacing(10)
-        scroll.setWidget(self._content)
-        layout.addWidget(scroll, stretch=1)
+        self.scroll.setWidget(self._content)
+        layout.addWidget(self.scroll, stretch=1)
 
         btns = QHBoxLayout()
         btns.setSpacing(8)
@@ -105,7 +137,7 @@ class PreviewDialog(QDialog):
         self.finished.connect(self._cleanup)
 
     def _build_preview(self):
-        pdf_path = self._template_manager.get_pdf_path(self._template.id)
+        pdf_path = self._template_manager.pdf_path(self._template.id)
         tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
         tmp.close()
         self._output_path = burn_text(
@@ -116,15 +148,61 @@ class PreviewDialog(QDialog):
             tmp.name,
         )
 
-        images = pdf_to_images(self._output_path, dpi=140)
-        for i, img in enumerate(images):
+        self._images = pdf_to_images(self._output_path, dpi=self.PREVIEW_DPI)
+        self._page_labels = []
+        for i, img in enumerate(self._images):
             page_label = QLabel(f"第 {i + 1} 页")
             page_label.setProperty("role", "meta")
             self._content_layout.addWidget(page_label)
             lbl = QLabel()
-            lbl.setPixmap(img)
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._content_layout.addWidget(lbl)
+            self._page_labels.append(lbl)
+
+    # ── 缩放 ──────────────────────────────────────
+
+    def _fit_scale(self) -> float:
+        if not self._images:
+            return 1.0
+        vp = max(120, self.scroll.viewport().width() - 30)
+        return vp / max(img.width() for img in self._images)
+
+    def _apply_zoom(self):
+        if self._failed or not self._images:
+            return
+        scale = self._fit_scale() * self._zoom_factor
+        for img, lbl in zip(self._images, self._page_labels):
+            lbl.setPixmap(
+                img.scaled(
+                    max(1, int(img.width() * scale)),
+                    max(1, int(img.height() * scale)),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        self._zoom_label.setText(f"{int(self._zoom_factor * 100)}%")
+
+    def _zoom_in(self):
+        self._zoom_factor = min(3.0, self._zoom_factor * 1.25)
+        self._apply_zoom()
+
+    def _zoom_out(self):
+        self._zoom_factor = max(0.25, self._zoom_factor / 1.25)
+        self._apply_zoom()
+
+    def _zoom_fit(self):
+        self._zoom_factor = 1.0
+        self._apply_zoom()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QtCore.QTimer.singleShot(0, self._apply_zoom)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_zoom()
+
+    # ── 导出 / 打印 ───────────────────────────────
 
     def _export(self):
         if self._failed or not self._output_path:
@@ -156,6 +234,8 @@ class PreviewDialog(QDialog):
                 return
 
     def _print(self):
+        if self._failed:
+            return
         from app.ui.print_helper import print_filled_pdf
         print_filled_pdf(
             self._template, self._record, self._template_manager, self

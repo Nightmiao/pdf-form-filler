@@ -1,5 +1,8 @@
 """对齐辅助 — 网格吸附和对齐线"""
 
+from __future__ import annotations
+
+
 from app.qt import QtCore, QtGui, Qt
 
 QLineF = QtCore.QLineF

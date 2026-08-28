@@ -1,5 +1,8 @@
 """填写记录管理器 — 用户填写数据的存储与读取"""
 
+from __future__ import annotations
+
+
 import os
 import json
 from datetime import datetime

@@ -1,5 +1,8 @@
 """模板导入导出 — .lmt 文件打包/解包（序列化复用 TemplateMeta.to_dict/from_dict）"""
 
+from __future__ import annotations
+
+
 import os
 import json
 import zipfile
@@ -53,11 +56,12 @@ def import_template(filepath: str, template_manager) -> TemplateMeta:
 
         # 以实际 PDF 创建新模板，再套用导入的字段/页面设置
         meta = template_manager.create(imported.name, pdf_path)
-        meta.page_settings = imported.page_settings
+        # 页面设置与字段页码一律以实际 PDF 页数为准（口径统一，防越界）
+        meta.page_settings = imported.page_settings[: meta.page_count]
         while len(meta.page_settings) < meta.page_count:
             from app.core.field_model import PageSettings
             meta.page_settings.append(PageSettings())
-        meta.fields = imported.fields
+        meta.fields = [f for f in imported.fields if f.page < meta.page_count]
         template_manager.update(meta)
 
         src_thumb = os.path.join(tmpdir, "thumbnail.png")
