@@ -1,12 +1,23 @@
 """缩略图导航栏 — 左侧多页缩略图（后台线程渲染，不阻塞界面）"""
 
+from __future__ import annotations
+
+
 import threading
 
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QScrollArea, QFrame, QHBoxLayout,
-)
-from PySide6.QtCore import Signal, Qt, QTimer
-from PySide6.QtGui import QPixmap, QPainter, QColor
+from app.qt import QtWidgets, QtCore, QtGui, Qt
+
+QWidget = QtWidgets.QWidget
+QVBoxLayout = QtWidgets.QVBoxLayout
+QLabel = QtWidgets.QLabel
+QScrollArea = QtWidgets.QScrollArea
+QFrame = QtWidgets.QFrame
+QHBoxLayout = QtWidgets.QHBoxLayout
+Signal = QtCore.Signal
+QTimer = QtCore.QTimer
+QPixmap = QtGui.QPixmap
+QPainter = QtGui.QPainter
+QColor = QtGui.QColor
 
 from app.core.field_model import TemplateMeta
 from app.core.pdf_engine import PdfSource, bytes_to_pixmap

@@ -11,8 +11,10 @@
 import os
 import math
 import fitz  # PyMuPDF
-from PySide6.QtGui import QPixmap
-from PySide6.QtCore import QSizeF
+from app.qt import QtGui, QtCore
+
+QPixmap = QtGui.QPixmap
+QSizeF = QtCore.QSizeF
 
 
 # ── 旋转几何工具（屏幕坐标系，y 轴向下，正角度=顺时针）────────────

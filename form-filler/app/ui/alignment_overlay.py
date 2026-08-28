@@ -1,7 +1,12 @@
 """对齐辅助 — 网格吸附和对齐线"""
 
-from PySide6.QtCore import QLineF, QPointF, QRectF, Qt
-from PySide6.QtGui import QPen, QColor
+from app.qt import QtCore, QtGui, Qt
+
+QLineF = QtCore.QLineF
+QPointF = QtCore.QPointF
+QRectF = QtCore.QRectF
+QPen = QtGui.QPen
+QColor = QtGui.QColor
 
 
 class AlignmentOverlay:

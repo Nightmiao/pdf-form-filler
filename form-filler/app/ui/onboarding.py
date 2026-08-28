@@ -1,9 +1,17 @@
 """新手引导 — 首次使用时的 3 步图文教程"""
 
-from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QStackedWidget, QWidget,
-)
-from PySide6.QtCore import Qt
+from __future__ import annotations
+
+
+from app.qt import QtWidgets, QtCore, Qt, dialog_exec
+
+QDialog = QtWidgets.QDialog
+QVBoxLayout = QtWidgets.QVBoxLayout
+QHBoxLayout = QtWidgets.QHBoxLayout
+QLabel = QtWidgets.QLabel
+QPushButton = QtWidgets.QPushButton
+QStackedWidget = QtWidgets.QStackedWidget
+QWidget = QtWidgets.QWidget
 
 from app.ui.theme import apply_role
 

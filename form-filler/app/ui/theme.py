@@ -1,6 +1,12 @@
 """全局视觉主题 — 浅色清爽风格的配色与样式表，以及按钮角色工具函数"""
 
-from PySide6.QtWidgets import QPushButton, QStyle
+from __future__ import annotations
+
+
+from app.qt import QtWidgets
+
+QPushButton = QtWidgets.QPushButton
+QStyle = QtWidgets.QStyle
 
 # ── 调色板 ──────────────────────────────────────────
 COLORS = {
@@ -184,6 +190,9 @@ def apply_role(btn: QPushButton, role: str):
     btn.style().polish(btn)
 
 
-def icon_of(widget, standard_pixmap):
-    """从 Qt 内置图标库取一个标准图标"""
-    return widget.style().standardIcon(standard_pixmap)
+def icon_of(widget, sp_name: str):
+    """从 Qt 内置图标库取一个标准图标（传名称，兼容 Qt5/Qt6 枚举差异）"""
+    sp = getattr(QStyle, sp_name, None)
+    if sp is None:
+        sp = getattr(QStyle.StandardPixmap, sp_name)
+    return widget.style().standardIcon(sp)

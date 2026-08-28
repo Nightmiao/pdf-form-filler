@@ -5,9 +5,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import math
 import fitz
-from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QFont, QFontDatabase
-from PySide6.QtTest import QTest
+from app.qt import QtWidgets, QtGui, printer_high_resolution, printer_device_pixel
+
+QApplication = QtWidgets.QApplication
+QFont = QtGui.QFont
+QFontDatabase = QtGui.QFontDatabase
+try:
+    from PySide6.QtTest import QTest  # 仅开发机回归测试使用
+except ImportError:
+    QTest = None
 
 app = QApplication(sys.argv)
 from app.ui.theme import APP_STYLESHEET
@@ -18,9 +24,13 @@ app.setStyle("Fusion")
 app.setStyleSheet(APP_STYLESHEET)
 
 # 打印机接口探针
-from PySide6.QtPrintSupport import QPrinter
-_pr = QPrinter(QPrinter.PrinterMode.HighResolution)
-_pr_page = _pr.pageRect(QPrinter.Unit.DevicePixel)
+from app.qt import QtPrintSupport
+QPrinter = QtPrintSupport.QPrinter
+_pr = QPrinter(printer_high_resolution())
+try:
+    _pr_page = _pr.pageRect(printer_device_pixel())
+except (TypeError, AttributeError):
+    _pr_page = _pr.pageRect()
 print("printer pageRect OK:", _pr_page.width(), _pr_page.height())
 
 # 临时数据目录（标记引导已完成，避免弹窗阻塞）

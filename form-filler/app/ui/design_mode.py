@@ -1,10 +1,19 @@
 """设计模式 — PDF 画布 + 两级工具栏（主操作 / 辅助工具）+ 提示条"""
 
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QToolBar, QSlider, QLabel,
-    QPushButton, QSpinBox, QCheckBox, QStyle,
-)
-from PySide6.QtCore import Signal, Qt
+from __future__ import annotations
+
+
+from app.qt import QtWidgets, QtCore, Qt, size_policy
+
+QWidget = QtWidgets.QWidget
+QVBoxLayout = QtWidgets.QVBoxLayout
+QToolBar = QtWidgets.QToolBar
+QSlider = QtWidgets.QSlider
+QLabel = QtWidgets.QLabel
+QPushButton = QtWidgets.QPushButton
+QSpinBox = QtWidgets.QSpinBox
+QCheckBox = QtWidgets.QCheckBox
+Signal = QtCore.Signal
 
 from app.ui.pdf_canvas import PdfCanvas
 from app.ui.theme import apply_role, icon_of, COLORS
@@ -36,7 +45,7 @@ class DesignMode(QWidget):
         main_bar.setMovable(False)
 
         back_btn = QPushButton("返回模板库")
-        back_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_ArrowBack))
+        back_btn.setIcon(icon_of(self, "SP_ArrowBack"))
         apply_role(back_btn, "ghost")
         back_btn.setToolTip("返回模板库（自动保存）")
         back_btn.clicked.connect(self.back_to_home)
@@ -49,14 +58,14 @@ class DesignMode(QWidget):
         main_bar.addWidget(self._title_label)
 
         # 弹性空间
-        from PySide6.QtWidgets import QSizePolicy
-        stretch = QWidget()
-        stretch.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        from app.qt import QtWidgets
+        stretch = QtWidgets.QWidget()
+        stretch.setSizePolicy(size_policy("Expanding"), size_policy("Preferred"))
         main_bar.addWidget(stretch)
 
         # 撤销 / 重做
         self._undo_btn = QPushButton("撤销")
-        self._undo_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_ArrowBack))
+        self._undo_btn.setIcon(icon_of(self, "SP_ArrowBack"))
         apply_role(self._undo_btn, "toolbar")
         self._undo_btn.setToolTip("撤销 (Ctrl+Z)")
         self._undo_btn.clicked.connect(self.undo)
@@ -64,7 +73,7 @@ class DesignMode(QWidget):
         main_bar.addWidget(self._undo_btn)
 
         self._redo_btn = QPushButton("重做")
-        self._redo_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_ArrowForward))
+        self._redo_btn.setIcon(icon_of(self, "SP_ArrowForward"))
         apply_role(self._redo_btn, "toolbar")
         self._redo_btn.setToolTip("重做 (Ctrl+Y)")
         self._redo_btn.clicked.connect(self.redo)
@@ -119,13 +128,13 @@ class DesignMode(QWidget):
         main_bar.addSeparator()
 
         self._save_btn = QPushButton("保存")
-        self._save_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_DialogSaveButton))
+        self._save_btn.setIcon(icon_of(self, "SP_DialogSaveButton"))
         self._save_btn.setToolTip("保存模板 (Ctrl+S)")
         self._save_btn.clicked.connect(self.save_requested)
         main_bar.addWidget(self._save_btn)
 
         self._fill_btn = QPushButton("去填写")
-        self._fill_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_DialogApplyButton))
+        self._fill_btn.setIcon(icon_of(self, "SP_DialogApplyButton"))
         apply_role(self._fill_btn, "primary")
         self._fill_btn.setToolTip("保存并进入填写模式")
         self._fill_btn.clicked.connect(self.switch_to_fill)
@@ -170,9 +179,9 @@ class DesignMode(QWidget):
         self._rotation_reset_btn.clicked.connect(self._on_rotation_reset)
         tools_bar.addWidget(self._rotation_reset_btn)
 
-        from PySide6.QtWidgets import QSizePolicy
-        stretch2 = QWidget()
-        stretch2.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        from app.qt import QtWidgets
+        stretch2 = QtWidgets.QWidget()
+        stretch2.setSizePolicy(size_policy("Expanding"), size_policy("Preferred"))
         tools_bar.addWidget(stretch2)
 
         hint = QLabel("在表格上按住鼠标左键拖拽，画出填写框")

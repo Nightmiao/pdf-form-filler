@@ -1,12 +1,22 @@
 """预览对话框 — 弹窗显示填好的 PDF 效果，可直接导出或打印"""
 
+from __future__ import annotations
+
+
 import tempfile
 import os
-from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QLabel, QScrollArea, QWidget,
-    QHBoxLayout, QPushButton, QFileDialog, QMessageBox, QStyle, QApplication,
-)
-from PySide6.QtCore import Qt
+from app.qt import QtWidgets, QtCore, Qt
+
+QDialog = QtWidgets.QDialog
+QVBoxLayout = QtWidgets.QVBoxLayout
+QLabel = QtWidgets.QLabel
+QScrollArea = QtWidgets.QScrollArea
+QWidget = QtWidgets.QWidget
+QHBoxLayout = QtWidgets.QHBoxLayout
+QPushButton = QtWidgets.QPushButton
+QFileDialog = QtWidgets.QFileDialog
+QMessageBox = QtWidgets.QMessageBox
+QApplication = QtWidgets.QApplication
 
 from app.ui.theme import apply_role, icon_of
 from app.core.pdf_engine import burn_text, pdf_to_images
@@ -78,12 +88,12 @@ class PreviewDialog(QDialog):
         btns.addStretch()
         export_btn = QPushButton("导出 PDF")
         apply_role(export_btn, "primary")
-        export_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_DialogSaveButton))
+        export_btn.setIcon(icon_of(self, "SP_DialogSaveButton"))
         export_btn.clicked.connect(self._export)
         self._export_btn = export_btn
         btns.addWidget(export_btn)
         print_btn = QPushButton("打印")
-        print_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_ComputerIcon))
+        print_btn.setIcon(icon_of(self, "SP_ComputerIcon"))
         print_btn.clicked.connect(self._print)
         self._print_btn = print_btn
         btns.addWidget(print_btn)

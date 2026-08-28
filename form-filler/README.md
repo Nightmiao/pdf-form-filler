@@ -66,6 +66,18 @@
 
 仓库还提供了 build_msi.bat（生成 MSI 安装包，需要 WiX Toolset）。
 
+## Windows 7 / 离线部署（重要）
+
+最终目标机是**离线（无网络）的 Windows 7**。Python 3.10+ 与 Qt 6 官方均不支持 Win7，
+因此项目做了双环境适配，完整说明见 **docs/Windows7-离线部署.md**。要点：
+
+- 代码通过 **app/qt.py 兼容层**自动适配：开发机用 PySide6（Qt 6），Win7 目标机用
+  **Python 3.9 + PySide2 5.15（Qt 5）+ PyMuPDF 1.23**，同一份源码无需改动；
+- 离线依赖 wheel 已备好在 **vendor/wheels/**（64 位），构建机双击 **build_win7.bat**
+  一键产出绿色 EXE，拷到 Win7 双击即用，目标机无需安装 Python；
+- Win7 系统要求：SP1 + VC++ 2015-2019 运行库（精简版系统另需 KB2533623 / KB2999226 补丁），
+  详见文档的常见问题清单。
+
 ## 项目结构
 
     form-filler/
@@ -98,7 +110,7 @@
 
 ## 技术栈
 
-- GUI：PySide6 (Qt 6)
+- GUI：PySide6 (Qt 6，开发机) / PySide2 (Qt 5，Windows 7 目标机，经 app/qt.py 兼容层适配)
 - PDF 引擎：PyMuPDF (fitz)
 - 存储：本地 JSON 文件
 - 打包：PyInstaller / MSI

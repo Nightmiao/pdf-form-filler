@@ -1,9 +1,16 @@
 """填写模式 — PDF 预览 + 字段高亮 + 提示条"""
 
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QPushButton, QToolBar, QStyle, QSizePolicy,
-)
-from PySide6.QtCore import Signal
+from __future__ import annotations
+
+
+from app.qt import QtWidgets, QtCore, size_policy
+
+QWidget = QtWidgets.QWidget
+QVBoxLayout = QtWidgets.QVBoxLayout
+QLabel = QtWidgets.QLabel
+QPushButton = QtWidgets.QPushButton
+QToolBar = QtWidgets.QToolBar
+Signal = QtCore.Signal
 
 from app.ui.pdf_canvas import PdfCanvas
 from app.ui.theme import apply_role, icon_of
@@ -31,7 +38,7 @@ class FillMode(QWidget):
         toolbar.setMovable(False)
 
         back_btn = QPushButton("返回模板库")
-        back_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_ArrowBack))
+        back_btn.setIcon(icon_of(self, "SP_ArrowBack"))
         apply_role(back_btn, "ghost")
         back_btn.setToolTip("返回模板库（自动保存草稿）")
         back_btn.clicked.connect(self.back_to_home)
@@ -43,8 +50,9 @@ class FillMode(QWidget):
         self._title_label.setStyleSheet("font-weight: 700; font-size: 14px; color: #1F2329;")
         toolbar.addWidget(self._title_label)
 
-        stretch = QWidget()
-        stretch.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        from app.qt import QtWidgets
+        stretch = QtWidgets.QWidget()
+        stretch.setSizePolicy(size_policy("Expanding"), size_policy("Preferred"))
         toolbar.addWidget(stretch)
 
         hint = QLabel("点击 PDF 上的蓝色框定位输入项，或按 Tab 依次填写")
@@ -54,7 +62,7 @@ class FillMode(QWidget):
         toolbar.addSeparator()
 
         design_btn = QPushButton("调整字段设计")
-        design_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_FileDialogDetailedView))
+        design_btn.setIcon(icon_of(self, "SP_FileDialogDetailedView"))
         design_btn.setToolTip("回到设计模式修改字段（自动保存草稿）")
         design_btn.clicked.connect(self.switch_to_design)
         toolbar.addWidget(design_btn)

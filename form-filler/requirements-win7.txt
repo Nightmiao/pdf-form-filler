@@ -1,0 +1,6 @@
+# Windows 7 离线目标机专用依赖（Python 3.9 64 位）
+# 说明：Python 3.10+ 与 Qt 6 官方均不支持 Windows 7，
+#       因此目标机锁定 Python 3.9 + PySide2(Qt 5) + PyMuPDF 1.23。
+# 对应离线 wheel 已放在 vendor/wheels/（勿提交 git）。
+PySide2==5.15.2.1
+PyMuPDF==1.23.26

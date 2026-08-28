@@ -1,15 +1,36 @@
 """首页 — 模板库：缩略图卡片墙、搜索（防抖）、新建/导入、空状态引导"""
 
+from __future__ import annotations
+
+
 import os
 from datetime import datetime
 
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton,
-    QFileDialog, QLabel, QMessageBox, QMenu, QFrame, QScrollArea,
-    QLayout, QLayoutItem, QSizePolicy, QStyle,
+from app.qt import (
+    QtWidgets, QtCore, QtGui, Qt,
+    std_button, menu_exec, orientation,
 )
-from PySide6.QtCore import Signal, Qt, QRect, QSize, QPoint, QTimer
-from PySide6.QtGui import QPixmap
+
+QWidget = QtWidgets.QWidget
+QVBoxLayout = QtWidgets.QVBoxLayout
+QHBoxLayout = QtWidgets.QHBoxLayout
+QLineEdit = QtWidgets.QLineEdit
+QPushButton = QtWidgets.QPushButton
+QFileDialog = QtWidgets.QFileDialog
+QLabel = QtWidgets.QLabel
+QMessageBox = QtWidgets.QMessageBox
+QMenu = QtWidgets.QMenu
+QFrame = QtWidgets.QFrame
+QScrollArea = QtWidgets.QScrollArea
+QLayout = QtWidgets.QLayout
+QLayoutItem = QtWidgets.QLayoutItem
+QStyle = QtWidgets.QStyle
+Signal = QtCore.Signal
+QRect = QtCore.QRect
+QSize = QtCore.QSize
+QPoint = QtCore.QPoint
+QTimer = QtCore.QTimer
+QPixmap = QtGui.QPixmap
 
 from app.ui.theme import apply_role, icon_of
 from app.core.field_model import TemplateMeta
@@ -59,7 +80,7 @@ class FlowLayout(QLayout):
         return None
 
     def expandingDirections(self):
-        return Qt.Orientation(0)
+        return orientation(0)
 
     def hasHeightForWidth(self) -> bool:
         return True
@@ -144,7 +165,7 @@ class TemplateCard(QFrame):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(6)
         fill_btn = QPushButton("填写")
-        fill_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_DialogApplyButton))
+        fill_btn.setIcon(icon_of(self, "SP_DialogApplyButton"))
         apply_role(fill_btn, "primary")
         fill_btn.clicked.connect(lambda: self.clicked.emit(self.template, "fill"))
         btn_row.addWidget(fill_btn, stretch=1)
@@ -231,19 +252,19 @@ class HomePage(QWidget):
         top.addWidget(self.search_input)
 
         help_btn = QPushButton("使用说明")
-        help_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_MessageBoxInformation))
+        help_btn.setIcon(icon_of(self, "SP_MessageBoxInformation"))
         help_btn.clicked.connect(self.help_requested)
         top.addWidget(help_btn)
 
         import_btn = QPushButton("导入模板")
-        import_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_DialogOpenButton))
+        import_btn.setIcon(icon_of(self, "SP_DialogOpenButton"))
         import_btn.setToolTip("导入 .lmt 模板文件")
         import_btn.clicked.connect(self._on_import_template)
         top.addWidget(import_btn)
 
         new_btn = QPushButton("新建模板")
         apply_role(new_btn, "primary")
-        new_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_FileDialogNewFolder))
+        new_btn.setIcon(icon_of(self, "SP_FileDialogNewFolder"))
         new_btn.setToolTip("选择一张 PDF 表单开始")
         new_btn.clicked.connect(self._on_new_template)
         top.addWidget(new_btn)
@@ -392,7 +413,7 @@ class HomePage(QWidget):
         global_pos = (
             sender_card.mapToGlobal(pos) if sender_card else self.mapToGlobal(pos)
         )
-        chosen = menu.exec_(global_pos)
+        chosen = menu_exec(menu, global_pos)
         if chosen == rename_action:
             self._rename_template(template)
         elif chosen == export_action:
@@ -401,7 +422,8 @@ class HomePage(QWidget):
             self._delete_template(template)
 
     def _rename_template(self, template: TemplateMeta):
-        from PySide6.QtWidgets import QInputDialog
+        from app.qt import QtWidgets
+        QInputDialog = QtWidgets.QInputDialog
         new_name, ok = QInputDialog.getText(
             self, "重命名模板", "模板名称：", text=template.name
         )
@@ -415,9 +437,9 @@ class HomePage(QWidget):
             self,
             "确认删除",
             f"确定删除模板「{template.name}」吗？\n模板和它的所有填写记录都会被删除，且无法恢复。",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            std_button("Yes") | std_button("No"),
         )
-        if reply == QMessageBox.StandardButton.Yes:
+        if reply == std_button("Yes"):
             self.template_manager.delete(template.id)
             self._cards.pop(template.id, None)
             self.template_deleted.emit(template.id)

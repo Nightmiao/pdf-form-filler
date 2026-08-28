@@ -2,9 +2,15 @@
 
 import tempfile
 import os
-from PySide6.QtPrintSupport import QPrinter, QPrintDialog
-from PySide6.QtGui import QPainter, QPixmap
-from PySide6.QtCore import Qt
+from app.qt import (
+    QtPrintSupport, QtGui, dialog_exec, dialog_accepted,
+    printer_high_resolution, printer_device_pixel,
+)
+
+QPrinter = QtPrintSupport.QPrinter
+QPrintDialog = QtPrintSupport.QPrintDialog
+QPainter = QtGui.QPainter
+QPixmap = QtGui.QPixmap
 
 
 def print_filled_pdf(template, record, template_manager, parent=None):
@@ -20,11 +26,11 @@ def print_filled_pdf(template, record, template_manager, parent=None):
         template.page_settings, tmp_file.name,
     )
 
-    printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+    printer = QPrinter(printer_high_resolution())
     printer.setDocName(template.name)
 
     dialog = QPrintDialog(printer, parent)
-    if dialog.exec() != QPrintDialog.DialogCode.Accepted:
+    if dialog_exec(dialog) != dialog_accepted():
         try:
             os.unlink(tmp_file.name)
         except OSError:
@@ -48,7 +54,10 @@ def print_filled_pdf(template, record, template_manager, parent=None):
             pixmap.loadFromData(pix.tobytes("png"))
 
             # 按纸张可打印区域等比缩放并居中
-            paper = printer.pageRect(QPrinter.Unit.DevicePixel)
+            try:
+                paper = printer.pageRect(printer_device_pixel())
+            except (TypeError, AttributeError):
+                paper = printer.pageRect()  # Qt5 旧签名：无参数版
             scale = min(
                 paper.width() / pixmap.width(),
                 paper.height() / pixmap.height(),

@@ -12,20 +12,39 @@
   由 _field_to_display / _field_to_pdf 负责双向换算。
 """
 
+from __future__ import annotations
+
+
 import copy
 import threading
 import uuid
 from collections import OrderedDict
 
-from PySide6.QtWidgets import (
-    QGraphicsView, QGraphicsScene, QGraphicsRectItem,
-    QGraphicsPixmapItem, QGraphicsLineItem, QMenu,
+from app.qt import (
+    QtWidgets, QtCore, QtGui, Qt,
+    ANCHOR_UNDER_MOUSE, NO_DRAG, FULL_VIEWPORT_UPDATE, SHAPE_NO_FRAME,
+    KEEP_ASPECT, RENDER_ANTIALIASING, RENDER_SMOOTH_PIXMAP, menu_exec,
 )
-from PySide6.QtCore import Qt, Signal, QRectF, QPointF, QSizeF, QTimer
-from PySide6.QtGui import (
-    QPixmap, QPainter, QPen, QColor, QBrush, QTransform,
-    QKeyEvent, QMouseEvent,
-)
+
+QGraphicsView = QtWidgets.QGraphicsView
+QGraphicsScene = QtWidgets.QGraphicsScene
+QGraphicsRectItem = QtWidgets.QGraphicsRectItem
+QGraphicsPixmapItem = QtWidgets.QGraphicsPixmapItem
+QGraphicsLineItem = QtWidgets.QGraphicsLineItem
+QMenu = QtWidgets.QMenu
+Signal = QtCore.Signal
+QRectF = QtCore.QRectF
+QPointF = QtCore.QPointF
+QSizeF = QtCore.QSizeF
+QTimer = QtCore.QTimer
+QPixmap = QtGui.QPixmap
+QPainter = QtGui.QPainter
+QPen = QtGui.QPen
+QColor = QtGui.QColor
+QBrush = QtGui.QBrush
+QTransform = QtGui.QTransform
+QKeyEvent = QtGui.QKeyEvent
+QMouseEvent = QtGui.QMouseEvent
 
 from app.core.pdf_engine import (
     PdfSource, bytes_to_pixmap, rotate_point_cw, rotate_point_ccw,
@@ -117,16 +136,16 @@ class PdfCanvas(QGraphicsView):
         self._interaction_baseline: dict | None = None  # 拖拽开始时的快照
         self._prop_baseline_id: str | None = None       # 属性连续编辑合并
 
-        self.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        self.setDragMode(QGraphicsView.DragMode.NoDrag)
-        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setRenderHint(RENDER_ANTIALIASING)
+        self.setRenderHint(RENDER_SMOOTH_PIXMAP)
+        self.setDragMode(NO_DRAG)
+        self.setTransformationAnchor(ANCHOR_UNDER_MOUSE)
+        self.setResizeAnchor(ANCHOR_UNDER_MOUSE)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        self.setViewportUpdateMode(FULL_VIEWPORT_UPDATE)
         self.setBackgroundBrush(QBrush(QColor(244, 246, 249)))
-        self.setFrameShape(self.Shape.NoFrame)
+        self.setFrameShape(SHAPE_NO_FRAME)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
@@ -277,7 +296,7 @@ class PdfCanvas(QGraphicsView):
                 self._add_field_item(field)
 
         self.current_page_changed.emit(page_num)
-        self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self.fitInView(self._scene.sceneRect(), KEEP_ASPECT)
         self._fit_scale = self.transform().m11()
         if self._zoom != 1.0:
             self._apply_zoom()
@@ -894,7 +913,7 @@ class PdfCanvas(QGraphicsView):
         menu = QMenu(self)
         copy_action = menu.addAction("复制字段")
         delete_action = menu.addAction("删除字段")
-        chosen = menu.exec_(self.mapToGlobal(viewport_pos))
+        chosen = menu_exec(menu, self.mapToGlobal(viewport_pos))
         if chosen == copy_action:
             self.select_field(field_id)
             self.copy_selected_field()

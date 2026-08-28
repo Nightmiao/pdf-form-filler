@@ -1,13 +1,36 @@
 """右侧面板 — 设计模式：字段列表+属性编辑；填写模式：当前项输入+记录管理"""
 
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QScrollArea,
-    QLabel, QLineEdit, QComboBox, QCheckBox, QSpinBox, QDoubleSpinBox,
-    QPushButton, QGroupBox, QTextEdit, QDateEdit, QListWidget,
-    QListWidgetItem, QMessageBox, QProgressBar, QStyle,
+from __future__ import annotations
+
+
+from app.qt import (
+    QtWidgets, QtCore, QtGui, Qt,
+    std_button, event_key_press, DRAG_INTERNAL_MOVE,
 )
-from PySide6.QtCore import Signal, Qt, QDate, QEvent
-from PySide6.QtGui import QColor
+
+QWidget = QtWidgets.QWidget
+QVBoxLayout = QtWidgets.QVBoxLayout
+QHBoxLayout = QtWidgets.QHBoxLayout
+QFormLayout = QtWidgets.QFormLayout
+QScrollArea = QtWidgets.QScrollArea
+QLabel = QtWidgets.QLabel
+QLineEdit = QtWidgets.QLineEdit
+QComboBox = QtWidgets.QComboBox
+QCheckBox = QtWidgets.QCheckBox
+QSpinBox = QtWidgets.QSpinBox
+QDoubleSpinBox = QtWidgets.QDoubleSpinBox
+QPushButton = QtWidgets.QPushButton
+QGroupBox = QtWidgets.QGroupBox
+QTextEdit = QtWidgets.QTextEdit
+QDateEdit = QtWidgets.QDateEdit
+QListWidget = QtWidgets.QListWidget
+QListWidgetItem = QtWidgets.QListWidgetItem
+QMessageBox = QtWidgets.QMessageBox
+QProgressBar = QtWidgets.QProgressBar
+QStyle = QtWidgets.QStyle
+Signal = QtCore.Signal
+QDate = QtCore.QDate
+QColor = QtGui.QColor
 
 from app.ui.theme import apply_role, icon_of
 from app.core.field_model import FieldDefinition, FillRecord
@@ -43,7 +66,7 @@ class FieldDesignPanel(QWidget):
         # 字段列表
         self._field_list = QListWidget()
         self._field_list.currentRowChanged.connect(self._on_field_selected_in_list)
-        self._field_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        self._field_list.setDragDropMode(DRAG_INTERNAL_MOVE)
         self._field_list.model().rowsMoved.connect(self._on_fields_reordered)
         layout.addWidget(self._field_list, stretch=1)
 
@@ -56,14 +79,14 @@ class FieldDesignPanel(QWidget):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(6)
         dup_btn = QPushButton("复制")
-        dup_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_FileDialogNewFolder))
+        dup_btn.setIcon(icon_of(self, "SP_FileDialogNewFolder"))
         dup_btn.setToolTip("复制选中字段（Ctrl+D）")
         dup_btn.clicked.connect(self._on_duplicate_field)
         btn_row.addWidget(dup_btn)
 
         del_btn = QPushButton("删除")
         apply_role(del_btn, "danger")
-        del_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_TrashIcon))
+        del_btn.setIcon(icon_of(self, "SP_TrashIcon"))
         del_btn.setToolTip("删除选中字段（Delete）")
         del_btn.clicked.connect(self._on_delete_field)
         btn_row.addWidget(del_btn)
@@ -299,9 +322,9 @@ class FieldDesignPanel(QWidget):
         fid = self._current_field.id
         reply = QMessageBox.question(
             self, "确认删除", f"确定删除字段「{self._current_field.name}」吗？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            std_button("Yes") | std_button("No"),
         )
-        if reply == QMessageBox.StandardButton.Yes:
+        if reply == std_button("Yes"):
             self._fields = [f for f in self._fields if f.id != fid]
             if self._template is not None:
                 self._template.fields = self._fields
@@ -371,7 +394,7 @@ class FieldFillPanel(QWidget):
         rbtn = QHBoxLayout()
         rbtn.setSpacing(4)
         new_btn = QPushButton("新建")
-        new_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_FileIcon))
+        new_btn.setIcon(icon_of(self, "SP_FileIcon"))
         new_btn.setToolTip("为这张表单新建一份填写记录（如给另一个人填）")
         new_btn.clicked.connect(self.record_new_requested)
         rbtn.addWidget(new_btn)
@@ -422,12 +445,12 @@ class FieldFillPanel(QWidget):
         nav = QHBoxLayout()
         nav.setSpacing(6)
         self._prev_btn = QPushButton("上一个")
-        self._prev_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_ArrowUp))
+        self._prev_btn.setIcon(icon_of(self, "SP_ArrowUp"))
         self._prev_btn.clicked.connect(self.tab_prev_requested)
         nav.addWidget(self._prev_btn)
         self._next_btn = QPushButton("下一个 (Tab)")
         apply_role(self._next_btn, "primary")
-        self._next_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_ArrowDown))
+        self._next_btn.setIcon(icon_of(self, "SP_ArrowDown"))
         self._next_btn.clicked.connect(self.tab_next_requested)
         nav.addWidget(self._next_btn)
         layout.addLayout(nav)
@@ -436,12 +459,12 @@ class FieldFillPanel(QWidget):
         actions = QHBoxLayout()
         actions.setSpacing(6)
         save_btn = QPushButton("保存草稿")
-        save_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_DialogSaveButton))
+        save_btn.setIcon(icon_of(self, "SP_DialogSaveButton"))
         save_btn.setToolTip("保存填写进度 (Ctrl+S)")
         save_btn.clicked.connect(self.save_requested)
         actions.addWidget(save_btn)
         preview_btn = QPushButton("预览")
-        preview_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_FileDialogContentsView))
+        preview_btn.setIcon(icon_of(self, "SP_FileDialogContentsView"))
         preview_btn.setToolTip("预览填写后的效果")
         preview_btn.clicked.connect(self.preview_requested)
         actions.addWidget(preview_btn)
@@ -451,12 +474,12 @@ class FieldFillPanel(QWidget):
         actions2.setSpacing(6)
         export_btn = QPushButton("导出 PDF")
         apply_role(export_btn, "primary")
-        export_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_DialogSaveButton))
+        export_btn.setIcon(icon_of(self, "SP_DialogSaveButton"))
         export_btn.setToolTip("把填写内容烧录进 PDF 并保存为新文件")
         export_btn.clicked.connect(self.export_requested)
         actions2.addWidget(export_btn)
         print_btn = QPushButton("打印")
-        print_btn.setIcon(icon_of(self, QStyle.StandardPixmap.SP_ComputerIcon))
+        print_btn.setIcon(icon_of(self, "SP_ComputerIcon"))
         print_btn.setToolTip("直接打印 (Ctrl+P)")
         print_btn.clicked.connect(self.print_requested)
         actions2.addWidget(print_btn)
@@ -703,7 +726,7 @@ class FieldFillPanel(QWidget):
     # ── TAB 快速填写 ──────────────────────────────
 
     def eventFilter(self, obj, event):
-        if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Tab:
+        if event.type() == event_key_press() and event.key() == Qt.Key.Key_Tab:
             if not isinstance(obj, QTextEdit):
                 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                     self.tab_prev_requested.emit()

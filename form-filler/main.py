@@ -2,8 +2,7 @@
 
 import sys
 import os
-from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QFont
+from app.qt import QtWidgets, QtGui
 
 from app.ui.theme import APP_STYLESHEET
 from app.ui.main_window import MainWindow
@@ -18,12 +17,12 @@ def get_data_dir() -> str:
 
 
 def main():
-    app = QApplication(sys.argv)
+    app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName("pdf-form-filler")
     app.setApplicationDisplayName("狸猫猫表单")
     app.setOrganizationName("FormFiller")
     app.setStyle("Fusion")
-    app.setFont(QFont("Microsoft YaHei", 10))
+    app.setFont(QtGui.QFont("Microsoft YaHei", 10))
     app.setStyleSheet(APP_STYLESHEET)
 
     data_dir = get_data_dir()
@@ -31,7 +30,7 @@ def main():
     window.resize(1280, 800)
     window.show()
 
-    sys.exit(app.exec())
+    sys.exit(app.exec_() if hasattr(app, "exec_") else app.exec())
 
 
 if __name__ == "__main__":

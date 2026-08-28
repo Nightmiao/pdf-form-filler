@@ -1,13 +1,26 @@
 """主窗口 — 全局布局、模式切换、记录管理、必填校验与快捷键"""
 
+from __future__ import annotations
+
+
 import os
 
-from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QStackedWidget,
-    QStatusBar, QLabel, QMessageBox, QFileDialog, QInputDialog,
+from app.qt import (
+    QtWidgets, QtCore, QtGui,
+    QAction, std_button, standard_key, dialog_exec,
 )
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QAction, QKeySequence
+
+QMainWindow = QtWidgets.QMainWindow
+QWidget = QtWidgets.QWidget
+QHBoxLayout = QtWidgets.QHBoxLayout
+QStackedWidget = QtWidgets.QStackedWidget
+QStatusBar = QtWidgets.QStatusBar
+QLabel = QtWidgets.QLabel
+QMessageBox = QtWidgets.QMessageBox
+QFileDialog = QtWidgets.QFileDialog
+QInputDialog = QtWidgets.QInputDialog
+QTimer = QtCore.QTimer
+QKeySequence = QtGui.QKeySequence
 
 from app.ui.home_page import HomePage
 from app.ui.design_mode import DesignMode
@@ -132,22 +145,22 @@ class MainWindow(QMainWindow):
 
     def _setup_shortcuts(self):
         save_action = QAction("保存", self)
-        save_action.setShortcut(QKeySequence.StandardKey.Save)
+        save_action.setShortcut(standard_key("Save"))
         save_action.triggered.connect(self._on_save_shortcut)
         self.addAction(save_action)
 
         undo_action = QAction("撤销", self)
-        undo_action.setShortcut(QKeySequence.StandardKey.Undo)
+        undo_action.setShortcut(standard_key("Undo"))
         undo_action.triggered.connect(self._on_undo)
         self.addAction(undo_action)
 
         redo_action = QAction("重做", self)
-        redo_action.setShortcut(QKeySequence.StandardKey.Redo)
+        redo_action.setShortcut(standard_key("Redo"))
         redo_action.triggered.connect(self._on_redo)
         self.addAction(redo_action)
 
         print_action = QAction("打印", self)
-        print_action.setShortcut(QKeySequence.StandardKey.Print)
+        print_action.setShortcut(standard_key("Print"))
         print_action.triggered.connect(self._on_print)
         self.addAction(print_action)
 
@@ -161,7 +174,7 @@ class MainWindow(QMainWindow):
 
     def _show_onboarding(self):
         dialog = OnboardingDialog(self)
-        dialog.exec()
+        dialog_exec(dialog)
         self._settings["onboarding_done"] = True
         save_settings(self.data_dir, self._settings)
 
@@ -524,9 +537,9 @@ class MainWindow(QMainWindow):
             self,
             "还有必填项未完成",
             f"以下必填项还没有填写：\n{names}{more}\n\n仍然导出吗？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            std_button("Yes") | std_button("No"),
         )
-        if reply == QMessageBox.StandardButton.Yes:
+        if reply == std_button("Yes"):
             return True
         # 跳到第一个未填项
         self.fill_mode.canvas.select_field_on_page(missing[0].id)

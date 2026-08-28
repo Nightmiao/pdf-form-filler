@@ -1,5 +1,8 @@
 """字段数据模型 — 定义表单字段和页面设置的数据结构，并提供统一的序列化/校验"""
 
+from __future__ import annotations
+
+
 from dataclasses import dataclass, field
 from typing import Literal
 import math

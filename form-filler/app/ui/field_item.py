@@ -5,12 +5,25 @@
 画布在对外发射 field_created / field_modified 时会再换算回 PDF 坐标。
 """
 
-from PySide6.QtWidgets import (
-    QGraphicsItem, QGraphicsObject, QGraphicsEllipseItem,
-    QGraphicsSceneMouseEvent, QStyleOptionGraphicsItem,
-)
-from PySide6.QtCore import Qt, Signal, QRectF, QPointF, QLineF
-from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QFont
+from __future__ import annotations
+
+
+from app.qt import QtWidgets, QtCore, QtGui, Qt, ITEM_SELECTABLE
+
+QGraphicsItem = QtWidgets.QGraphicsItem
+QGraphicsObject = QtWidgets.QGraphicsObject
+QGraphicsEllipseItem = QtWidgets.QGraphicsEllipseItem
+QGraphicsSceneMouseEvent = QtWidgets.QGraphicsSceneMouseEvent
+QStyleOptionGraphicsItem = QtWidgets.QStyleOptionGraphicsItem
+Signal = QtCore.Signal
+QRectF = QtCore.QRectF
+QPointF = QtCore.QPointF
+QLineF = QtCore.QLineF
+QPainter = QtGui.QPainter
+QPen = QtGui.QPen
+QColor = QtGui.QColor
+QBrush = QtGui.QBrush
+QFont = QtGui.QFont
 
 from app.core.field_model import FieldDefinition
 from app.ui.theme import COLORS
@@ -96,7 +109,7 @@ class FieldItem(QGraphicsObject):
         self._setup_handles()
         self._update_transform()
 
-        self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
+        self.setFlags(ITEM_SELECTABLE)
         self.setAcceptHoverEvents(True)
         self.setZValue(10)
 
