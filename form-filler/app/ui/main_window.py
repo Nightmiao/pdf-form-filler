@@ -1,10 +1,12 @@
 """主窗口 — 全局布局、模式切换、记录管理、必填校验与快捷键"""
 
+import os
+
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QStackedWidget,
     QStatusBar, QLabel, QMessageBox, QFileDialog, QInputDialog,
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QKeySequence
 
 from app.ui.home_page import HomePage
@@ -77,6 +79,7 @@ class MainWindow(QMainWindow):
         self.design_mode.switch_to_fill.connect(self._on_design_to_fill)
         self.design_mode.save_requested.connect(self._save_template)
         self.design_mode.fields_restored.connect(self._on_fields_restored)
+        self.design_mode.page_rotation_changed.connect(self._on_page_rotation_changed)
         canvas_d = self.design_mode.canvas
         canvas_d.field_created.connect(self._on_field_created_in_canvas)
         canvas_d.field_modified.connect(self._on_field_modified_in_canvas)
@@ -103,6 +106,7 @@ class MainWindow(QMainWindow):
         self.field_design_panel.field_focus_requested.connect(self._on_field_focus_requested)
         self.field_design_panel.field_delete_requested.connect(self._on_field_delete_requested)
         self.field_design_panel.field_duplicate_requested.connect(self._on_field_duplicate_requested)
+        self.field_design_panel.tab_order_changed.connect(self._on_tab_order_changed)
         self.right_panel.addWidget(self.field_design_panel)
 
         self.field_fill_panel = FieldFillPanel()
@@ -166,9 +170,8 @@ class MainWindow(QMainWindow):
     def _show_home(self):
         if self.center_stack.currentIndex() == self.MODE_DESIGN and self._current_template:
             self._save_template()
-        if self.center_stack.currentIndex() == self.MODE_FILL and self._current_record:
-            self._flush_record()
-            self.record_manager.save(self._current_record)
+        if self.center_stack.currentIndex() == self.MODE_FILL:
+            self._save_current_record()
 
         self._current_template = None
         self._current_record = None
@@ -263,7 +266,10 @@ class MainWindow(QMainWindow):
         self.field_design_panel.select_field(field_id)
 
     def _on_field_created_in_canvas(self, field):
+        """画布新建字段：MainWindow 是模板数据的唯一写入方"""
         if self._current_template:
+            if not any(f.id == field.id for f in self._current_template.fields):
+                self._current_template.fields.append(field)
             self.field_design_panel.load_fields(self._current_template)
             self.field_design_panel.select_field(field.id)
             self._mark_modified()
@@ -292,15 +298,33 @@ class MainWindow(QMainWindow):
             self._mark_modified()
             self._set_status("已撤销/重做操作")
 
-    def _on_field_updated(self, field):
-        """右侧属性面板更新字段"""
-        if self._current_template:
-            for i, f in enumerate(self._current_template.fields):
-                if f.id == field.id:
-                    self._current_template.fields[i] = field
-                    break
-            self.design_mode.update_field(field)
-            self._mark_modified()
+    def _on_field_updated(self, panel_field):
+        """右侧属性面板更新字段。
+
+        面板持有的是字段副本；画布上的对象才带最新几何（rect）。
+        因此这里只合并面板可编辑的属性，几何信息以画布为准，
+        避免"改个名字，位置弹回原位"的问题。
+        """
+        if self._current_template is None:
+            return
+        target = next(
+            (f for f in self._current_template.fields if f.id == panel_field.id), None
+        )
+        if target is None:
+            return
+        target.name = panel_field.name
+        target.field_type = panel_field.field_type
+        target.font_size = panel_field.font_size
+        target.alignment = panel_field.alignment
+        target.required = panel_field.required
+        target.default_value = panel_field.default_value
+        target.max_length = panel_field.max_length
+        target.multiline = panel_field.multiline
+        target.select_options = list(panel_field.select_options)
+        target.rotation = panel_field.rotation
+        target.checked_by_default = panel_field.checked_by_default
+        self.design_mode.update_field(target)
+        self._mark_modified()
 
     def _on_field_focus_requested(self, field_id: str):
         if self._current_template:
@@ -313,6 +337,19 @@ class MainWindow(QMainWindow):
     def _on_field_duplicate_requested(self, field_id: str):
         self.design_mode.canvas.select_field_on_page(field_id)
         self.design_mode.canvas.duplicate_selected_field()
+
+    def _on_tab_order_changed(self, fields: list):
+        """字段列表拖拽排序 → 同步画布 Tab 顺序"""
+        if self._current_template:
+            self._current_template.fields = fields
+            self.design_mode.canvas.load_fields(fields)
+            self._mark_modified()
+
+    def _on_page_rotation_changed(self, page_num: int, rotation: float):
+        """页面旋转矫正变化 → 写入模板数据"""
+        if self._current_template and page_num < len(self._current_template.page_settings):
+            self._current_template.page_settings[page_num].rotation = rotation
+            self._mark_modified()
 
     # ── 填写模式信号 ──────────────────────────────
 
@@ -337,12 +374,20 @@ class MainWindow(QMainWindow):
         if self._current_record:
             self._current_record.values.update(self.field_fill_panel.get_current_values())
 
+    def _save_current_record(self):
+        """收面板值 + 落盘保存当前记录（切换/新建/删除/返回/关闭统一走这里）"""
+        if not self._current_record:
+            return
+        self._flush_record()
+        self.record_manager.save(self._current_record)
+        self._clear_modified()
+
     # ── 记录管理 ──────────────────────────────────
 
     def _on_record_selected(self, record_id: str):
         if not self._current_template:
             return
-        self._flush_record()
+        self._save_current_record()  # 先把当前记录的修改落盘
         record = self.record_manager.get(self._current_template.id, record_id)
         if record is None:
             return
@@ -355,7 +400,7 @@ class MainWindow(QMainWindow):
     def _on_record_new(self):
         if not self._current_template:
             return
-        self._flush_record()
+        self._save_current_record()  # 先把当前记录的修改落盘
         default = self.record_manager.next_name(self._current_template.id)
         name, ok = QInputDialog.getText(
             self, "新建填写记录",
@@ -394,6 +439,9 @@ class MainWindow(QMainWindow):
         target = next((r for r in records if r.id == record_id), None)
         if target is None:
             return
+        # 删除的不是当前记录时，先把当前记录的修改落盘
+        if self._current_record and self._current_record.id != record_id:
+            self._save_current_record()
         reply = QMessageBox.question(
             self, "确认删除",
             f"确定删除记录「{target.name or '未命名记录'}」吗？\n此操作无法恢复。",
@@ -431,17 +479,13 @@ class MainWindow(QMainWindow):
 
     def _on_fill_to_design(self):
         if self._current_template:
-            if self._current_record:
-                self._flush_record()
-                self.record_manager.save(self._current_record)
+            self._save_current_record()
             fresh = self.template_manager.get(self._current_template.id)
             self._enter_design_mode(fresh or self._current_template)
 
     def _on_save_record(self):
         if self._current_record and self._current_template:
-            self._flush_record()
-            self.record_manager.save(self._current_record)
-            self._clear_modified()
+            self._save_current_record()
             self._set_status(f"草稿已保存 - {self._current_template.name}")
 
     def _on_save_shortcut(self):
@@ -512,17 +556,39 @@ class MainWindow(QMainWindow):
             self._current_template, self._current_record, self.template_manager, self
         )
 
+    def _choose_export_path(self) -> str:
+        """选择导出路径；不允许覆盖模板原始 PDF"""
+        if self._current_template is None:
+            return ""
+        original = os.path.normcase(os.path.abspath(
+            self.template_manager.pdf_path(self._current_template.id)
+        ))
+        for attempt in range(2):
+            filepath, _ = QFileDialog.getSaveFileName(
+                self, "导出填好的 PDF",
+                f"{self._current_template.name}_已填写.pdf",
+                "PDF 文件 (*.pdf)",
+            )
+            if not filepath:
+                return ""
+            chosen = os.path.normcase(os.path.abspath(filepath))
+            if chosen == original:
+                QMessageBox.warning(
+                    self, "不能覆盖原文件",
+                    "导出的 PDF 不能与模板原始文件保存在同一路径，\n"
+                    "请换个文件名或位置（例如文件名后加「_已填写」）。",
+                )
+                continue
+            return filepath
+        return ""
+
     def _on_export_pdf(self):
         if not self._current_template or not self._current_record:
             return
         if not self._confirm_required():
             return
         self._flush_record()
-        filepath, _ = QFileDialog.getSaveFileName(
-            self, "导出填好的 PDF",
-            f"{self._current_template.name}_已填写.pdf",
-            "PDF 文件 (*.pdf)",
-        )
+        filepath = self._choose_export_path()
         if filepath:
             from app.core.pdf_engine import burn_text
             pdf_path = self.template_manager.get_pdf_path(self._current_template.id)
@@ -568,9 +634,8 @@ class MainWindow(QMainWindow):
         try:
             if self.center_stack.currentIndex() == self.MODE_DESIGN and self._current_template:
                 self._save_template()
-            if self.center_stack.currentIndex() == self.MODE_FILL and self._current_record:
-                self._flush_record()
-                self.record_manager.save(self._current_record)
+            if self.center_stack.currentIndex() == self.MODE_FILL:
+                self._save_current_record()
         except Exception:
             pass
         event.accept()

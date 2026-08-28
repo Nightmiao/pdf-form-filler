@@ -1,9 +1,11 @@
-"""PDF 引擎 — 基于 PyMuPDF 封装，提供渲染、烧录、缩略图等功能
+"""PDF 引擎 — 基于 PyMuPDF 封装：渲染、烧录、缩略图
 
-坐标系约定：
-- 字段的 rect 始终以"原始 PDF 点坐标"存储；
-- 页面旋转（扫描倾斜矫正）只在显示层处理，烧录时直接使用 PDF 坐标，
-  因此显示与导出天然一致。
+坐标与旋转约定：
+- 字段 rect 恒以"原始 PDF 点坐标"存储；
+- 页面旋转（扫描倾斜矫正）只影响显示；导出时把矫正角一并写入，
+  因此"画布上看到什么，导出就是什么"；
+- 任意角度的字段旋转用 insert_text 的 morph 矩阵精确写入，
+  不再四舍五入到 90°（insert_textbox 只用于 90° 整数倍的快速路径）。
 """
 
 import os
@@ -13,28 +15,15 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtCore import QSizeF
 
 
-def get_page_count(pdf_path: str) -> int:
-    """获取 PDF 页数"""
-    doc = fitz.open(pdf_path)
-    count = doc.page_count
-    doc.close()
-    return count
-
-
-def get_page_size(pdf_path: str, page_num: int = 0) -> QSizeF:
-    """获取指定页的尺寸（PDF 点单位，1 point = 1/72 inch）"""
-    doc = fitz.open(pdf_path)
-    rect = doc[page_num].rect
-    doc.close()
-    return QSizeF(rect.width, rect.height)
-
-
 # ── 旋转几何工具（屏幕坐标系，y 轴向下，正角度=顺时针）────────────
 
 def rotate_point_cw(
     x: float, y: float, cx: float, cy: float, angle_deg: float
 ) -> tuple[float, float]:
-    """把点 (x,y) 绕中心 (cx,cy) 顺时针旋转 angle_deg 度"""
+    """屏幕坐标系（y 向下）中顺时针旋转；与 QTransform.rotate 方向一致。
+
+    已用 QTransform.rotate(+15) 实测校准：正角度 = 屏幕顺时针。
+    """
     if angle_deg == 0:
         return x, y
     rad = math.radians(angle_deg)
@@ -42,13 +31,12 @@ def rotate_point_cw(
     dy = y - cy
     cos_a = math.cos(rad)
     sin_a = math.sin(rad)
-    return (cx + dx * cos_a + dy * sin_a, cy - dx * sin_a + dy * cos_a)
+    return (cx + dx * cos_a - dy * sin_a, cy + dx * sin_a + dy * cos_a)
 
 
 def rotate_point_ccw(
     x: float, y: float, cx: float, cy: float, angle_deg: float
 ) -> tuple[float, float]:
-    """把点 (x,y) 绕中心 (cx,cy) 逆时针旋转 angle_deg 度"""
     return rotate_point_cw(x, y, cx, cy, -angle_deg)
 
 
@@ -56,28 +44,19 @@ def rotate_rect_cw(
     rect: tuple[float, float, float, float],
     cx: float, cy: float, angle_deg: float,
 ) -> tuple[float, float, float, float]:
-    """旋转矩形（旋转两个对角点，再规整顺序）"""
+    """顺时针旋转矩形（保持精确角点，不做轴对齐外接框）"""
     x0, y0 = rotate_point_cw(rect[0], rect[1], cx, cy, angle_deg)
     x1, y1 = rotate_point_cw(rect[2], rect[3], cx, cy, angle_deg)
-    return _order_rect((x0, y0, x1, y1))
+    return (x0, y0, x1, y1)
 
 
 def rotate_rect_ccw(
     rect: tuple[float, float, float, float],
     cx: float, cy: float, angle_deg: float,
 ) -> tuple[float, float, float, float]:
-    """逆时针旋转矩形"""
+    """逆时针旋转矩形（保持精确角点，与 cw 互逆）"""
     x0, y0 = rotate_point_ccw(rect[0], rect[1], cx, cy, angle_deg)
     x1, y1 = rotate_point_ccw(rect[2], rect[3], cx, cy, angle_deg)
-    return _order_rect((x0, y0, x1, y1))
-
-
-def _order_rect(rect: tuple) -> tuple[float, float, float, float]:
-    x0, y0, x1, y1 = rect
-    if x0 > x1:
-        x0, x1 = x1, x0
-    if y0 > y1:
-        y0, y1 = y1, y0
     return (x0, y0, x1, y1)
 
 
@@ -89,41 +68,83 @@ def normalize_angle(angle: float) -> float:
     return a
 
 
-def _round_rotation(angle: float) -> int:
-    """将角度规范化为 PyMuPDF insert_textbox 接受的值：0 / 90 / 180 / 270"""
-    if angle == 0:
-        return 0
-    return int(round(angle / 90) * 90) % 360
+# ── PDF 源（复用同一个已打开的文档，避免每页都重新开文件）─────────
+
+class PdfSource:
+    """一个 PDF 文件的句柄：页数/尺寸/渲染都从这里走"""
+
+    def __init__(self, pdf_path: str):
+        self.path = pdf_path
+        self.doc = fitz.open(pdf_path)
+
+    @property
+    def page_count(self) -> int:
+        return self.doc.page_count
+
+    def page_size(self, page_num: int) -> QSizeF:
+        rect = self.doc[page_num].rect
+        return QSizeF(rect.width, rect.height)
+
+    def render_page_bytes(self, page_num: int, dpi: int) -> bytes:
+        """渲染一页为 PNG 字节流（可在工作线程调用）"""
+        zoom = dpi / 72.0
+        pix = self.doc[page_num].get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+        return pix.tobytes("png")
+
+    def render_all_page_bytes(self, dpi: int) -> list[bytes]:
+        """一次打开渲染全部页（批量缩略图用）"""
+        out = []
+        zoom = dpi / 72.0
+        mat = fitz.Matrix(zoom, zoom)
+        for page_num in range(self.page_count):
+            pix = self.doc[page_num].get_pixmap(matrix=mat)
+            out.append(pix.tobytes("png"))
+        return out
+
+    def close(self):
+        try:
+            self.doc.close()
+        except Exception:
+            pass
+
+
+def get_page_count(pdf_path: str) -> int:
+    doc = fitz.open(pdf_path)
+    count = doc.page_count
+    doc.close()
+    return count
 
 
 # ── 渲染 ───────────────────────────────────────────
 
-def render_page(pdf_path: str, page_num: int = 0, dpi: int = 150) -> QPixmap:
-    """把指定页渲染为 QPixmap（始终渲染原始朝向，不烘焙旋转）
-
-    页面旋转矫正由画布层用 QGraphicsItem 变换完成。
-    通过 PNG 字节流加载，避免直接引用 pix.samples 缓冲区可能悬空的隐患。
-    """
-    doc = fitz.open(pdf_path)
-    page = doc[page_num]
-    zoom = dpi / 72.0
-    mat = fitz.Matrix(zoom, zoom)
-    pix = page.get_pixmap(matrix=mat)
-    doc.close()
+def bytes_to_pixmap(png_bytes: bytes) -> QPixmap:
     pixmap = QPixmap()
-    pixmap.loadFromData(pix.tobytes("png"))
+    pixmap.loadFromData(png_bytes)
     return pixmap
 
 
+def render_page(pdf_path: str, page_num: int = 0, dpi: int = 150) -> QPixmap:
+    """把指定页渲染为 QPixmap（单页便捷接口；批量请用 PdfSource）"""
+    source = PdfSource(pdf_path)
+    try:
+        return bytes_to_pixmap(source.render_page_bytes(page_num, dpi))
+    finally:
+        source.close()
+
+
 def render_thumbnail(pdf_path: str, page_num: int = 0, dpi: int = 72) -> QPixmap:
-    """渲染缩略图（低分辨率）"""
     return render_page(pdf_path, page_num, dpi)
 
 
-def render_all_page_thumbnails(pdf_path: str, dpi: int = 72) -> list[QPixmap]:
-    """渲染所有页的缩略图"""
-    count = get_page_count(pdf_path)
-    return [render_thumbnail(pdf_path, i, dpi) for i in range(count)]
+def pdf_to_images(pdf_path: str, dpi: int = 150) -> list[QPixmap]:
+    """将 PDF 所有页渲染为 QPixmap 列表（只打开一次文件）"""
+    source = PdfSource(pdf_path)
+    try:
+        return [
+            bytes_to_pixmap(b) for b in source.render_all_page_bytes(dpi)
+        ]
+    finally:
+        source.close()
 
 
 # ── 烧录 ───────────────────────────────────────────
@@ -137,55 +158,152 @@ def burn_text(
 ) -> str:
     """把填写内容写进 PDF 并另存为新文件
 
-    fields 的 rect 均为原始 PDF 坐标，页面旋转仅影响显示，
-    这里直接按坐标写入即可。
+    - 90° 整数倍且页面无矫正角：insert_textbox 快速路径（自动缩字号防溢出）；
+    - 其他情况（任意角度字段旋转 / 页面矫正角 ≠ 0）：insert_text + morph
+      矩阵精确写入，显示与导出一致。
+    - 非法字段（页码越界、rect 损坏）自动跳过，不再抛异常。
     """
     if output_path is None:
         base, ext = os.path.splitext(pdf_path)
         output_path = f"{base}_filled{ext}"
 
     doc = fitz.open(pdf_path)
+    page_count = doc.page_count
+    page_settings = page_settings or []
 
     cjk_font = _find_cjk_font()
     if cjk_font:
-        for page_num in range(doc.page_count):
+        for page_num in range(page_count):
             try:
                 doc[page_num].insert_font(fontfile=cjk_font, fontname="CJKFont")
             except Exception:
-                pass  # 字体已存在则跳过
+                pass
 
     for field in fields:
-        field_id = field.id
-        value = values.get(field_id, field.default_value)
-        if not value:
-            continue
-
-        page = doc[field.page]
-
-        if field.field_type == "checkbox":
-            checked = value.lower() in ("true", "yes", "✓", "√", "是", "1", "on")
-            if not checked:
-                continue
-            value = "√"
-
-        font_size = field.font_size
-        align_map = {"left": 0, "center": 1, "right": 2}
-        align = align_map.get(field.alignment, 0)
-        font_name = "CJKFont" if cjk_font else "china-ss"
-        field_rotation = _round_rotation(field.rotation)
-
-        rect = fitz.Rect(*field.rect)
-        _insert_text_fit(
-            page, rect, value,
-            font_name=font_name,
-            font_size=font_size,
-            align=align,
-            rotation=field_rotation,
-        )
+        try:
+            _burn_field(doc, field, values, page_settings, cjk_font)
+        except Exception:
+            continue  # 单个字段失败不影响其余字段
 
     doc.save(output_path)
     doc.close()
     return output_path
+
+
+def _burn_field(doc, field, values, page_settings, cjk_font):
+    field_id = getattr(field, "id", None)
+    value = values.get(field_id, getattr(field, "default_value", "")) if field_id else ""
+    if not value:
+        return
+
+    page_num = int(getattr(field, "page", 0))
+    if not (0 <= page_num < doc.page_count):
+        return
+    page = doc[page_num]
+
+    rect = getattr(field, "rect", None)
+    if not isinstance(rect, (list, tuple)) or len(rect) != 4:
+        return
+    if not all(math.isfinite(float(v)) for v in rect):
+        return
+    rect = fitz.Rect(float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
+    if rect.is_empty or rect.width < 1 or rect.height < 1:
+        return
+
+    if getattr(field, "field_type", "text") == "checkbox":
+        checked = value.lower() in ("true", "yes", "✓", "√", "是", "1", "on")
+        if not checked:
+            return
+        value = "√"
+
+    font_size = float(getattr(field, "font_size", 12.0) or 12.0)
+    align = getattr(field, "alignment", "left")
+    rotation = float(getattr(field, "rotation", 0.0) or 0.0)
+
+    page_rot = 0.0
+    if 0 <= page_num < len(page_settings):
+        page_rot = float(getattr(page_settings[page_num], "rotation", 0.0) or 0.0)
+
+    font_name = "CJKFont" if cjk_font else "china-ss"
+
+    if page_rot == 0 and rotation % 90 == 0:
+        # 快速路径：轴对齐 + 90° 倍数
+        align_map = {"left": 0, "center": 1, "right": 2}
+        _insert_text_fit(
+            page, rect, value,
+            font_name=font_name,
+            font_size=font_size,
+            align=align_map.get(align, 0),
+            rotation=_round_rotation(rotation),
+        )
+    else:
+        # 精确路径：先在"显示坐标系"（页面矫正角后的轴对齐矩形）里排版，
+        # 再把基准点换算回 PDF 坐标，并用 morph 矩阵写入任意角度。
+        page_rect = page.rect
+        pcx, pcy = page_rect.width / 2, page_rect.height / 2
+        disp_rect = fitz.Rect(*rotate_rect_cw(
+            (rect.x0, rect.y0, rect.x1, rect.y1), pcx, pcy, page_rot
+        ))
+        _insert_text_rotated(
+            page, disp_rect, value,
+            font_name=font_name,
+            font_size=font_size,
+            align=align,
+            rotation=rotation,
+            page_rot=page_rot,
+            page_center=(pcx, pcy),
+            cjk_font=cjk_font,
+        )
+
+
+def _insert_text_rotated(
+    page, disp_rect, value, font_name, font_size, align,
+    rotation, page_rot, page_center, cjk_font,
+):
+    """任意角度写入：显示坐标排版 → 回转 PDF 坐标 → morph 旋转字形。
+
+    - 显示坐标：页面整体旋转 page_rot 后，文字应呈轴对齐；
+    - 文字在 PDF 中的角度 = rotation（字段自身旋转角）；
+    - morph 以"行基线点"为枢轴，只旋转字形不移动位置。
+    """
+    lines = str(value).split("\n")
+    metrics_font = fitz.Font(fontfile=cjk_font) if cjk_font else fitz.Font("china-ss")
+
+    # 自动缩小字号直到放得下（与 insert_textbox 路径行为一致）
+    size = font_size
+    line_height = size * 1.25
+    total_h = line_height * len(lines)
+    max_w = max((metrics_font.text_length(ln, size) for ln in lines), default=0)
+    while size >= 4:
+        line_height = size * 1.25
+        total_h = line_height * len(lines)
+        max_w = max((metrics_font.text_length(ln, size) for ln in lines), default=0)
+        if max_w <= disp_rect.width + 0.5 and total_h <= disp_rect.height + 0.5:
+            break
+        size -= 1
+
+    ascent = metrics_font.ascender * size
+    top = disp_rect.y0 + max(0.0, (disp_rect.height - total_h) / 2)
+
+    for i, line in enumerate(lines):
+        w = metrics_font.text_length(line, size)
+        if align == "center":
+            x = disp_rect.x0 + (disp_rect.width - w) / 2
+        elif align == "right":
+            x = disp_rect.x1 - w
+        else:
+            x = disp_rect.x0
+        y = top + ascent + i * line_height
+
+        # 显示坐标 → PDF 坐标（绕页面中心回转矫正角）
+        px, py = rotate_point_ccw(x, y, page_center[0], page_center[1], page_rot)
+        pivot = fitz.Point(px, py)
+        page.insert_text(
+            pivot, line,
+            fontname=font_name,
+            fontsize=size,
+            morph=(pivot, fitz.Matrix(rotation)),
+        )
 
 
 def _insert_text_fit(page, rect, value, font_name, font_size, align, rotation):
@@ -215,6 +333,12 @@ def _insert_text_fit(page, rect, value, font_name, font_size, align, rotation):
         pass
 
 
+def _round_rotation(angle: float) -> int:
+    if angle == 0:
+        return 0
+    return int(round(angle / 90) * 90) % 360
+
+
 def _find_cjk_font() -> str:
     """查找系统可用的中文字体文件路径"""
     import sys
@@ -235,8 +359,3 @@ def _find_cjk_font() -> str:
         if os.path.exists(path):
             return path
     return ""
-
-
-def pdf_to_images(pdf_path: str, dpi: int = 150) -> list[QPixmap]:
-    """将 PDF 所有页渲染为 QPixmap 列表"""
-    return [render_page(pdf_path, i, dpi) for i in range(get_page_count(pdf_path))]

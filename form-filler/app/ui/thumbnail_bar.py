@@ -1,15 +1,18 @@
-"""缩略图导航栏 — 左侧多页缩略图（带页码标签与选中高亮）"""
+"""缩略图导航栏 — 左侧多页缩略图（后台线程渲染，不阻塞界面）"""
+
+import threading
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QScrollArea, QFrame, QHBoxLayout,
 )
-from PySide6.QtCore import Signal, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Signal, Qt, QTimer
+from PySide6.QtGui import QPixmap, QPainter, QColor
 
 from app.core.field_model import TemplateMeta
-from app.core.pdf_engine import render_thumbnail
+from app.core.pdf_engine import PdfSource, bytes_to_pixmap
 
 THUMB_WIDTH = 168
+THUMB_DPI = 96
 
 
 class ThumbItem(QFrame):
@@ -40,6 +43,10 @@ class ThumbItem(QFrame):
         self._label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         v.addWidget(self._label)
 
+    def set_pixmap(self, pixmap: QPixmap):
+        if not pixmap.isNull():
+            self._img.setPixmap(pixmap)
+
     def set_current(self, current: bool):
         if current:
             self.setObjectName("cardSelected")
@@ -59,6 +66,16 @@ class ThumbItem(QFrame):
         super().mousePressEvent(event)
 
 
+def _placeholder_pixmap() -> QPixmap:
+    pm = QPixmap(THUMB_WIDTH, int(THUMB_WIDTH * 1.42))
+    pm.fill(QColor(238, 241, 245))
+    painter = QPainter(pm)
+    painter.setPen(QColor(160, 170, 185))
+    painter.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, "加载中…")
+    painter.end()
+    return pm
+
+
 class ThumbnailBar(QWidget):
     """左侧缩略图导航栏"""
 
@@ -69,6 +86,12 @@ class ThumbnailBar(QWidget):
         self._items: list[ThumbItem] = []
         self._current_page: int = 0
         self._page_count: int = 0
+        self._generation: int = 0
+        self._job: dict | None = None
+        self._timer = QTimer(self)
+        self._timer.setInterval(60)
+        self._timer.timeout.connect(self._collect_job)
+        self._timer.start()
         self._setup_ui()
 
     def _setup_ui(self):
@@ -100,6 +123,10 @@ class ThumbnailBar(QWidget):
         layout.addWidget(scroll, stretch=1)
 
     def load_pages(self, template: TemplateMeta, pdf_path: str):
+        """先显示占位图，缩略图在后台线程渲染完成后逐页回填"""
+        self._generation += 1
+        generation = self._generation
+        self._job = None
         self._page_count = template.page_count
         self._current_page = 0
         self._items = []
@@ -109,17 +136,51 @@ class ThumbnailBar(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
+        placeholder = _placeholder_pixmap()
         for i in range(self._page_count):
-            thumb = render_thumbnail(pdf_path, i, 96)
-            scaled = thumb.scaledToWidth(
-                THUMB_WIDTH, Qt.TransformationMode.SmoothTransformation
-            )
-            item = ThumbItem(i, scaled)
+            item = ThumbItem(i, placeholder)
             item.clicked.connect(self._on_page_clicked)
             self._items.append(item)
             self._thumb_layout.insertWidget(self._thumb_layout.count() - 1, item)
 
         self.set_current_page(0)
+
+        # 后台一次打开渲染全部页
+        job = {"done": False, "bytes": []}
+        self._job = job
+
+        def worker():
+            try:
+                source = PdfSource(pdf_path)
+                try:
+                    job["bytes"] = source.render_all_page_bytes(THUMB_DPI)
+                finally:
+                    source.close()
+            except Exception:
+                job["bytes"] = []
+            job["done"] = True
+
+        threading.Thread(target=worker, daemon=True).start()
+        self._job_generation = generation
+
+    def _collect_job(self):
+        job = self._job
+        if job is None or not job.get("done"):
+            return
+        self._job = None
+        # 只回填属于当前加载批次的结果
+        gen_ok = getattr(self, "_job_generation", 0) == self._generation
+        if not gen_ok or not job.get("bytes"):
+            return
+        for i, data in enumerate(job["bytes"]):
+            if i >= len(self._items):
+                break
+            pixmap = bytes_to_pixmap(data)
+            if not pixmap.isNull():
+                scaled = pixmap.scaledToWidth(
+                    THUMB_WIDTH, Qt.TransformationMode.SmoothTransformation
+                )
+                self._items[i].set_pixmap(scaled)
 
     def set_current_page(self, page_num: int):
         self._current_page = page_num

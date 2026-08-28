@@ -2,12 +2,12 @@
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QToolBar, QSlider, QLabel,
-    QPushButton, QSpinBox, QCheckBox, QFrame, QHBoxLayout, QStyle,
+    QPushButton, QSpinBox, QCheckBox, QStyle,
 )
 from PySide6.QtCore import Signal, Qt
 
 from app.ui.pdf_canvas import PdfCanvas
-from app.ui.theme import apply_role, icon_of
+from app.ui.theme import apply_role, icon_of, COLORS
 from app.core.field_model import TemplateMeta, FieldDefinition
 
 
@@ -19,6 +19,7 @@ class DesignMode(QWidget):
     switch_to_fill = Signal()
     save_requested = Signal()
     fields_restored = Signal(object)    # 撤销/重做后完整字段列表
+    page_rotation_changed = Signal(int, float)  # page_num, rotation
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -44,14 +45,10 @@ class DesignMode(QWidget):
         main_bar.addSeparator()
 
         self._title_label = QLabel("未命名模板")
-        self._title_label.setStyleSheet("font-weight: 700; font-size: 14px; color: #1F2329;")
+        self._title_label.setStyleSheet(f"font-weight: 700; font-size: 14px; color: {COLORS['text']};")
         main_bar.addWidget(self._title_label)
 
         # 弹性空间
-        spacer = QWidget()
-        spacer.setSizePolicy(spacer.sizePolicy().horizontalPolicy(), spacer.sizePolicy().verticalPolicy())
-        spacer.setFixedWidth(12)
-        main_bar.addWidget(spacer)
         from PySide6.QtWidgets import QSizePolicy
         stretch = QWidget()
         stretch.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -103,7 +100,7 @@ class DesignMode(QWidget):
         self._zoom_label = QLabel("100%")
         self._zoom_label.setFixedWidth(46)
         self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._zoom_label.setStyleSheet("color:#374151; font-weight:600;")
+        self._zoom_label.setStyleSheet(f"color:{COLORS['text_secondary']}; font-weight:600;")
         main_bar.addWidget(self._zoom_label)
 
         self._zoom_in_btn = QPushButton("＋")
@@ -139,7 +136,7 @@ class DesignMode(QWidget):
         # ── 第二行：画布辅助工具 ──
         tools_bar = QToolBar()
         tools_bar.setMovable(False)
-        tools_bar.setStyleSheet("QToolBar { background: #FAFBFC; }")
+        tools_bar.setStyleSheet("QToolBar { background: #FAFBFC; }")  # 次级工具栏稍浅底
 
         snap_btn = QCheckBox("网格吸附")
         snap_btn.setChecked(True)
@@ -164,7 +161,7 @@ class DesignMode(QWidget):
 
         self._rotation_value_label = QLabel("0.0°")
         self._rotation_value_label.setFixedWidth(42)
-        self._rotation_value_label.setStyleSheet("color:#374151; font-weight:600;")
+        self._rotation_value_label.setStyleSheet(f"color:{COLORS['text_secondary']}; font-weight:600;")
         tools_bar.addWidget(self._rotation_value_label)
 
         self._rotation_reset_btn = QPushButton("重置")
@@ -187,9 +184,6 @@ class DesignMode(QWidget):
         # ── 画布 ──
         self._canvas = PdfCanvas()
         self._canvas.set_mode(PdfCanvas.MODE_DESIGN)
-        self._canvas.field_created.connect(self._on_field_created)
-        self._canvas.field_modified.connect(self._on_field_modified)
-        self._canvas.field_deleted.connect(self._on_field_deleted)
         self._canvas.field_selected_sig.connect(self._on_field_selected)
         self._canvas.current_page_changed.connect(self._on_page_changed)
         self._canvas.zoom_changed.connect(self._on_canvas_zoom_changed)
@@ -259,23 +253,6 @@ class DesignMode(QWidget):
 
     # ── 信号处理 ──────────────────────────────────
 
-    def _on_field_created(self, field: FieldDefinition):
-        if self._template:
-            self._template.fields.append(field)
-
-    def _on_field_modified(self, field: FieldDefinition):
-        if self._template:
-            for i, f in enumerate(self._template.fields):
-                if f.id == field.id:
-                    self._template.fields[i] = field
-                    break
-
-    def _on_field_deleted(self, field_id: str):
-        if self._template:
-            self._template.fields = [
-                f for f in self._template.fields if f.id != field_id
-            ]
-
     def _on_field_selected(self, field_id: str):
         self.field_selected.emit(field_id)
 
@@ -293,11 +270,9 @@ class DesignMode(QWidget):
     def _on_page_rotation_changed(self, value: int):
         rotation = value / 10.0
         self._rotation_value_label.setText(f"{rotation:.1f}°")
-        if self._template:
-            page = self._canvas.current_page
-            if page < len(self._template.page_settings):
-                self._template.page_settings[page].rotation = rotation
-            self._canvas.set_page_rotation(page, rotation)
+        page = self._canvas.current_page
+        self._canvas.set_page_rotation(page, rotation)
+        self.page_rotation_changed.emit(page, rotation)
 
     def _on_rotation_reset(self):
         self._rotation_slider.setValue(0)

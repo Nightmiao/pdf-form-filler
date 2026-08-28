@@ -6,13 +6,14 @@
 """
 
 from PySide6.QtWidgets import (
-    QGraphicsItem, QGraphicsObject, QGraphicsRectItem, QGraphicsEllipseItem,
+    QGraphicsItem, QGraphicsObject, QGraphicsEllipseItem,
     QGraphicsSceneMouseEvent, QStyleOptionGraphicsItem,
 )
 from PySide6.QtCore import Qt, Signal, QRectF, QPointF, QLineF
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QFont
 
 from app.core.field_model import FieldDefinition
+from app.ui.theme import COLORS
 
 HANDLE_SIZE = 8
 
@@ -140,21 +141,24 @@ class FieldItem(QGraphicsObject):
 
         rect = QRectF(0, 0, w, h)
 
+        primary = QColor(COLORS["primary"])
         if self._mode == "fill":
             # 填写模式：淡蓝底 + 深蓝框，输入内容直接显示在框内
             if self._selected:
-                pen = QPen(QColor(59, 130, 246), 2.5)
-                brush = QBrush(QColor(59, 130, 246, 40))
+                pen = QPen(primary, 2.5)
+                brush = QBrush(QColor(primary.red(), primary.green(), primary.blue(), 40))
             else:
-                pen = QPen(QColor(59, 130, 246, 140), 1.5)
-                brush = QBrush(QColor(59, 130, 246, 18))
+                pen = QPen(QColor(primary.red(), primary.green(), primary.blue(), 140), 1.5)
+                brush = QBrush(QColor(primary.red(), primary.green(), primary.blue(), 18))
             painter.setPen(pen)
             painter.setBrush(brush)
             painter.drawRect(rect)
 
             painter.setPen(QPen(QColor(24, 51, 133)))
-            display_font_size = max(9, int(self._field.font_size))
-            font = QFont("Microsoft YaHei", display_font_size)
+            # 场景坐标系是 150 DPI（SCALE = 150/72），字号必须按此比例换算，
+            # 否则画布预览文字会比导出小约 36%，误导"会不会溢出框"的判断。
+            font = QFont("Microsoft YaHei")
+            font.setPixelSize(max(9, int(round(self._field.font_size * self._scale))))
             painter.setFont(font)
             align_map = {
                 "left": Qt.AlignmentFlag.AlignLeft,
@@ -171,10 +175,10 @@ class FieldItem(QGraphicsObject):
         else:
             # 设计模式：白色底 + 蓝框 + 字段名/类型标签
             if self._selected:
-                pen = QPen(QColor(59, 130, 246), 2.5)
-                brush = QBrush(QColor(59, 130, 246, 35))
+                pen = QPen(primary, 2.5)
+                brush = QBrush(QColor(primary.red(), primary.green(), primary.blue(), 35))
             else:
-                pen = QPen(QColor(59, 130, 246, 170), 1.5)
+                pen = QPen(QColor(primary.red(), primary.green(), primary.blue(), 170), 1.5)
                 brush = QBrush(QColor(255, 255, 255, 60))
             painter.setPen(pen)
             painter.setBrush(brush)

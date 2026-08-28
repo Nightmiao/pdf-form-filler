@@ -99,13 +99,11 @@ class FillMode(QWidget):
         self._canvas.select_field_on_page(field_id)
 
     def update_field_value(self, field_id: str, value: str):
-        if field_id in self._canvas._field_items:
-            self._canvas._field_items[field_id].set_fill_value(value)
+        self._canvas.set_field_value(field_id, value)
 
     def _sync_canvas_values(self):
         if self._record:
-            for field_id, item in self._canvas._field_items.items():
-                item.set_fill_value(self._record.values.get(field_id, ""))
+            self._canvas.apply_fill_values(self._record.values)
 
     @property
     def canvas(self) -> PdfCanvas:

@@ -5,6 +5,7 @@ __pycache__/
 dist/
 build/
 *.spec
+!form-filler.spec
 *.exe
 
 # 虚拟环境
@@ -22,3 +23,10 @@ Thumbs.db
 form-filler/data/
 # 测试截图输出
 form-filler/_shots/
+# 安装包构建产物（只提交 .wxs / .bat / .py 源文件）
+form-filler/installer/*.msi
+form-filler/installer/*.wixpdb
+form-filler/installer/msi-info/
+form-filler/installer/staging/
+form-filler/build/
+form-filler/dist/

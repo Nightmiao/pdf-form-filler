@@ -13,20 +13,22 @@
 """
 
 import copy
+import threading
 import uuid
+from collections import OrderedDict
 
 from PySide6.QtWidgets import (
     QGraphicsView, QGraphicsScene, QGraphicsRectItem,
     QGraphicsPixmapItem, QGraphicsLineItem, QMenu,
 )
-from PySide6.QtCore import Qt, Signal, QRectF, QPointF, QSizeF
+from PySide6.QtCore import Qt, Signal, QRectF, QPointF, QSizeF, QTimer
 from PySide6.QtGui import (
     QPixmap, QPainter, QPen, QColor, QBrush, QTransform,
     QKeyEvent, QMouseEvent,
 )
 
 from app.core.pdf_engine import (
-    render_page, get_page_count, rotate_point_cw, rotate_point_ccw,
+    PdfSource, bytes_to_pixmap, rotate_point_cw, rotate_point_ccw,
     rotate_rect_cw, rotate_rect_ccw, normalize_angle,
 )
 from app.core.field_model import FieldDefinition, PageSettings
@@ -38,6 +40,7 @@ DPI = 150
 SCALE = DPI / 72.0  # PDF point → pixel
 
 MAX_UNDO = 50
+MAX_CACHED_PIXMAPS = 6  # 页面像素缓存上限（LRU）
 
 
 class PdfCanvas(QGraphicsView):
@@ -63,11 +66,17 @@ class PdfCanvas(QGraphicsView):
         self.setScene(self._scene)
 
         self._pdf_path: str = ""
+        self._source: PdfSource | None = None
         self._page_count: int = 1
         self._current_page: int = 0
-        self._page_pixmaps: dict[int, QPixmap] = {}
+        self._page_pixmaps: "OrderedDict[int, QPixmap]" = OrderedDict()
         self._page_size_pdf: dict[int, tuple[float, float]] = {}
         self._page_settings: list[PageSettings] = []
+        self._render_jobs: dict[int, dict] = {}  # 后台渲染任务
+        self._render_timer = QTimer(self)
+        self._render_timer.setInterval(60)
+        self._render_timer.timeout.connect(self._collect_render_jobs)
+        self._render_timer.start()
 
         self._fields: list[FieldDefinition] = []
         self._field_items: dict[str, FieldItem] = {}
@@ -138,13 +147,17 @@ class PdfCanvas(QGraphicsView):
     # ── 加载 ──────────────────────────────────────
 
     def load_pdf(self, pdf_path: str, page_settings: list[PageSettings] = None):
+        if self._source is not None:
+            self._source.close()
         self._pdf_path = pdf_path
-        self._page_count = get_page_count(pdf_path)
+        self._source = PdfSource(pdf_path)
+        self._page_count = self._source.page_count
         self._page_settings = page_settings or [
             PageSettings() for _ in range(self._page_count)
         ]
         self._page_pixmaps.clear()
         self._page_size_pdf.clear()
+        self._render_jobs.clear()
         self._scene.clear()
         self._field_items.clear()
         self._fields = []
@@ -152,17 +165,88 @@ class PdfCanvas(QGraphicsView):
         self._undo_stack.clear()
         self._redo_stack.clear()
         self._emit_undo_state()
-        self._render_page(0)
+        self._ensure_page_pixmap(0)  # 首页同步渲染（仅一次）
         self._current_page = 0
 
-    def _render_page(self, page_num: int):
+    # ── 页面渲染与缓存 ─────────────────────────────
+
+    def _cache_pixmap(self, page_num: int, pixmap: QPixmap):
+        """写入缓存并做 LRU 淘汰"""
+        self._page_pixmaps[page_num] = pixmap
+        self._page_pixmaps.move_to_end(page_num)
+        while len(self._page_pixmaps) > MAX_CACHED_PIXMAPS:
+            oldest = next(iter(self._page_pixmaps))
+            if oldest == self._current_page and len(self._page_pixmaps) > 1:
+                # 优先保留当前页，淘汰第二旧的
+                keys = list(self._page_pixmaps.keys())
+                oldest = keys[1]
+            self._page_pixmaps.pop(oldest, None)
+            self._page_size_pdf.pop(oldest, None)
+
+    def _ensure_page_pixmap(self, page_num: int):
+        """确保某页像素已渲染（当前页同步；其余走后台预取）"""
         if page_num in self._page_pixmaps:
             return
-        pixmap = render_page(self._pdf_path, page_num, DPI)
-        self._page_pixmaps[page_num] = pixmap
+        if page_num == self._current_page or not self._page_pixmaps:
+            self._render_page_sync(page_num)
+        else:
+            self._request_render(page_num)
+
+    def _render_page_sync(self, page_num: int):
+        if self._source is None or page_num in self._page_pixmaps:
+            return
+        try:
+            pixmap = bytes_to_pixmap(self._source.render_page_bytes(page_num, DPI))
+        except Exception:
+            pixmap = QPixmap()
+        if pixmap.isNull():
+            pixmap = QPixmap(100, 140)
+            pixmap.fill(QColor(255, 255, 255))
+        self._cache_pixmap(page_num, pixmap)
         self._page_size_pdf[page_num] = (
             pixmap.width() / SCALE, pixmap.height() / SCALE
         )
+
+    def _request_render(self, page_num: int):
+        """后台渲染一页（用于相邻页预取）"""
+        if self._source is None or page_num in self._page_pixmaps:
+            return
+        if page_num in self._render_jobs:
+            return
+        if not (0 <= page_num < self._page_count):
+            return
+        job = {"done": False, "bytes": None}
+        self._render_jobs[page_num] = job
+        source = self._source
+
+        def worker():
+            try:
+                job["bytes"] = source.render_page_bytes(page_num, DPI)
+            except Exception:
+                job["bytes"] = b""
+            job["done"] = True
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _collect_render_jobs(self):
+        """把后台渲染结果收进缓存（GUI 线程）"""
+        finished = [p for p, j in self._render_jobs.items() if j["done"]]
+        for page_num in finished:
+            job = self._render_jobs.pop(page_num)
+            pixmap = bytes_to_pixmap(job["bytes"] or b"")
+            if not pixmap.isNull():
+                self._cache_pixmap(page_num, pixmap)
+                self._page_size_pdf[page_num] = (
+                    pixmap.width() / SCALE, pixmap.height() / SCALE
+                )
+                if page_num == self._current_page:
+                    self._update_page_display()
+
+    def closeEvent(self, event):
+        if self._source is not None:
+            self._source.close()
+            self._source = None
+        super().closeEvent(event)
 
     def _current_page_rotation(self) -> float:
         if self._current_page < len(self._page_settings):
@@ -176,7 +260,7 @@ class PdfCanvas(QGraphicsView):
     def show_page(self, page_num: int):
         if page_num < 0 or page_num >= self._page_count:
             return
-        self._render_page(page_num)
+        self._ensure_page_pixmap(page_num)
         self._scene.clear()
         self._field_items.clear()
         self._selected_field_item = None
@@ -197,6 +281,10 @@ class PdfCanvas(QGraphicsView):
         self._fit_scale = self.transform().m11()
         if self._zoom != 1.0:
             self._apply_zoom()
+
+        # 后台预取相邻页
+        self._request_render(page_num - 1)
+        self._request_render(page_num + 1)
 
     def _update_page_display(self):
         """应用页面旋转：旋转图片图元并放大场景范围，避免旋转后被裁掉"""
@@ -230,30 +318,24 @@ class PdfCanvas(QGraphicsView):
     # ── 显示坐标 ↔ PDF 坐标 ───────────────────────
 
     def _field_to_display(self, field: FieldDefinition) -> FieldDefinition:
-        """PDF 坐标字段 → 显示坐标字段（rect 平移旋转，rotation 叠加页面角）"""
+        """PDF 坐标字段 → 显示坐标字段（精确角点旋转，无外接框近似）"""
         rot = self._current_page_rotation()
         if rot == 0:
             return copy.deepcopy(field)
         d = copy.deepcopy(field)
-        w, h = field.width, field.height
-        cx, cy = (field.rect[0] + field.rect[2]) / 2, (field.rect[1] + field.rect[3]) / 2
         pcx, pcy = self._page_center_pdf()
-        ncx, ncy = rotate_point_cw(cx, cy, pcx, pcy, rot)
-        d.rect = (ncx - w / 2, ncy - h / 2, ncx + w / 2, ncy + h / 2)
+        d.rect = rotate_rect_cw(field.rect, pcx, pcy, rot)
         d.rotation = normalize_angle(field.rotation + rot)
         return d
 
     def _field_to_pdf(self, field: FieldDefinition) -> FieldDefinition:
-        """显示坐标字段 → PDF 坐标字段"""
+        """显示坐标字段 → PDF 坐标字段（精确角点旋转）"""
         rot = self._current_page_rotation()
         if rot == 0:
             return copy.deepcopy(field)
         d = copy.deepcopy(field)
-        w, h = field.width, field.height
-        cx, cy = (field.rect[0] + field.rect[2]) / 2, (field.rect[1] + field.rect[3]) / 2
         pcx, pcy = self._page_center_pdf()
-        ncx, ncy = rotate_point_ccw(cx, cy, pcx, pcy, rot)
-        d.rect = (ncx - w / 2, ncy - h / 2, ncx + w / 2, ncy + h / 2)
+        d.rect = rotate_rect_ccw(field.rect, pcx, pcy, rot)
         d.rotation = normalize_angle(field.rotation - rot)
         return d
 
@@ -515,11 +597,19 @@ class PdfCanvas(QGraphicsView):
     # ── 字段操作 ──────────────────────────────────
 
     def load_fields(self, fields: list[FieldDefinition]):
+        """重载字段列表（重排 Tab 顺序等），保持当前选中"""
+        selected_id = (
+            self._selected_field_item.field.id
+            if self._selected_field_item is not None
+            else ""
+        )
         self._fields = copy.deepcopy(fields)
         self._field_items.clear()
         self._selected_field_item = None
         if self._current_page < self._page_count:
             self.show_page(self._current_page)
+        if selected_id in self._field_items:
+            self.select_field(selected_id)
         self._reset_prop_baseline()
 
     def add_field(self, field: FieldDefinition):
@@ -600,6 +690,16 @@ class PdfCanvas(QGraphicsView):
             target = ordered[(idx - 1) % len(ordered)]
         self.select_field_on_page(target.id)
         self.field_selected_sig.emit(target.id)
+
+    def apply_fill_values(self, values: dict[str, str]):
+        """把填写值同步到当前页所有字段图元的显示"""
+        for field_id, item in self._field_items.items():
+            item.set_fill_value(values.get(field_id, ""))
+
+    def set_field_value(self, field_id: str, value: str):
+        """设置单个字段图元的显示值（字段不在当前页时无操作）"""
+        if field_id in self._field_items:
+            self._field_items[field_id].set_fill_value(value)
 
     def _delete_selected_field(self):
         if self._selected_field_item and self._mode == self.MODE_DESIGN:
@@ -684,8 +784,9 @@ class PdfCanvas(QGraphicsView):
 
                 self._drawing = True
                 self._draw_start = scene_pos
+                from app.ui.theme import COLORS
                 self._draw_rect = QGraphicsRectItem(QRectF(scene_pos, QSizeF(0, 0)))
-                self._draw_rect.setPen(QPen(QColor(59, 130, 246), 2, Qt.PenStyle.DashLine))
+                self._draw_rect.setPen(QPen(QColor(COLORS["primary"]), 2, Qt.PenStyle.DashLine))
                 self._draw_rect.setBrush(QBrush(QColor(59, 130, 246, 30)))
                 self._draw_rect.setZValue(100)
                 self._scene.addItem(self._draw_rect)

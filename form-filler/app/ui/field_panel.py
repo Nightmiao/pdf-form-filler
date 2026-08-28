@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QScrollArea,
     QLabel, QLineEdit, QComboBox, QCheckBox, QSpinBox, QDoubleSpinBox,
     QPushButton, QGroupBox, QTextEdit, QDateEdit, QListWidget,
-    QListWidgetItem, QMessageBox, QProgressBar, QStyle, QFrame,
+    QListWidgetItem, QMessageBox, QProgressBar, QStyle,
 )
 from PySide6.QtCore import Signal, Qt, QDate, QEvent
 from PySide6.QtGui import QColor
@@ -22,6 +22,7 @@ class FieldDesignPanel(QWidget):
     field_focus_requested = Signal(str)
     field_delete_requested = Signal(str)
     field_duplicate_requested = Signal(str)
+    tab_order_changed = Signal(object)  # 拖拽排序后的完整字段列表
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -174,6 +175,9 @@ class FieldDesignPanel(QWidget):
     # ── 内部 ──────────────────────────────────────
 
     def _refresh_field_list(self):
+        selected_id = (
+            self._current_field.id if self._current_field is not None else ""
+        )
         self._field_list.blockSignals(True)
         self._field_list.clear()
         for f in sorted(self._fields, key=lambda x: (x.page, x.tab_order, x.name)):
@@ -182,8 +186,26 @@ class FieldDesignPanel(QWidget):
             if f.required:
                 item.setForeground(QColor(200, 0, 0))
             self._field_list.addItem(item)
+        # 恢复选中高亮
+        if selected_id:
+            for i in range(self._field_list.count()):
+                if self._field_list.item(i).data(Qt.ItemDataRole.UserRole) == selected_id:
+                    self._field_list.setCurrentRow(i)
+                    break
         self._field_list.blockSignals(False)
         self._update_list_hint()
+
+    def _update_current_row_text(self):
+        """属性修改时只更新当前行的显示文本，避免整表重建丢选中"""
+        if self._current_field is None:
+            return
+        f = self._current_field
+        for i in range(self._field_list.count()):
+            item = self._field_list.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == f.id:
+                item.setText(f"{f.name}　[{f.display_type}]　第{f.page + 1}页")
+                item.setForeground(QColor(200, 0, 0) if f.required else QColor(31, 35, 41))
+                break
 
     def _update_list_hint(self):
         has = self._field_list.count() > 0
@@ -293,7 +315,7 @@ class FieldDesignPanel(QWidget):
             self.field_duplicate_requested.emit(self._current_field.id)
 
     def _on_fields_reordered(self):
-        """拖拽排序后更新 TAB 顺序（按 id 对应，避免错位）"""
+        """拖拽排序后更新 TAB 顺序，并通知主窗口同步画布"""
         new_order = []
         for i in range(self._field_list.count()):
             item = self._field_list.item(i)
@@ -306,6 +328,7 @@ class FieldDesignPanel(QWidget):
         self._fields = new_order
         if self._template is not None:
             self._template.fields = self._fields
+        self.tab_order_changed.emit(self._fields)
 
 
 class FieldFillPanel(QWidget):
@@ -670,7 +693,11 @@ class FieldFillPanel(QWidget):
         if idx < 0:
             return
         rid = self._record_combo.itemData(idx)
-        if rid and self._record is None or (self._record and rid != self._record.id):
+        if not rid:
+            return
+        is_new = self._record is None
+        is_different = self._record is not None and rid != self._record.id
+        if is_new or is_different:
             self.record_selected.emit(rid)
 
     # ── TAB 快速填写 ──────────────────────────────

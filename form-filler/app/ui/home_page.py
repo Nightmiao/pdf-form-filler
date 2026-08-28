@@ -1,4 +1,4 @@
-"""首页 — 模板库：缩略图卡片墙、搜索、新建/导入、空状态引导"""
+"""首页 — 模板库：缩略图卡片墙、搜索（防抖）、新建/导入、空状态引导"""
 
 import os
 from datetime import datetime
@@ -6,10 +6,10 @@ from datetime import datetime
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton,
     QFileDialog, QLabel, QMessageBox, QMenu, QFrame, QScrollArea,
-    QLayout, QLayoutItem, QSizePolicy, QStyle, QGridLayout,
+    QLayout, QLayoutItem, QSizePolicy, QStyle,
 )
-from PySide6.QtCore import Signal, Qt, QRect, QSize, QPoint
-from PySide6.QtGui import QPixmap, QIcon
+from PySide6.QtCore import Signal, Qt, QRect, QSize, QPoint, QTimer
+from PySide6.QtGui import QPixmap
 
 from app.ui.theme import apply_role, icon_of
 from app.core.field_model import TemplateMeta
@@ -112,6 +112,9 @@ class TemplateCard(QFrame):
         self.setObjectName("card")
         self.setFixedWidth(236)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._thumb_label = None
+        self._name_label = None
+        self._info_label = None
         self._setup_ui(thumb_path)
 
     def _setup_ui(self, thumb_path: str):
@@ -119,42 +122,25 @@ class TemplateCard(QFrame):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        # 缩略图
         self._thumb_label = QLabel()
         self._thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._thumb_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        pixmap = QPixmap()
-        if thumb_path and os.path.exists(thumb_path):
-            pixmap = QPixmap(thumb_path)
-        if pixmap.isNull():
-            pixmap = QPixmap()
-        if not pixmap.isNull():
-            scaled = pixmap.scaled(
-                216, 150, Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            self._thumb_label.setPixmap(scaled)
+        self._set_thumb(thumb_path)
         self._thumb_label.setFixedHeight(150)
         layout.addWidget(self._thumb_label)
 
-        # 名称
-        name = QLabel(self.template.name)
-        name.setStyleSheet("font-weight: 700; font-size: 13px; color: #1F2329; background: transparent;")
-        name.setWordWrap(True)
-        name.setMaximumHeight(38)
-        name.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        layout.addWidget(name)
+        self._name_label = QLabel(self.template.name)
+        self._name_label.setStyleSheet("font-weight: 700; font-size: 13px; color: #1F2329; background: transparent;")
+        self._name_label.setWordWrap(True)
+        self._name_label.setMaximumHeight(38)
+        self._name_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        layout.addWidget(self._name_label)
 
-        # 信息
-        info = QLabel(
-            f"{self.template.page_count} 页 · {len(self.template.fields)} 个字段 · "
-            f"{format_time(self.template.updated_at)}"
-        )
-        info.setProperty("role", "meta")
-        info.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        layout.addWidget(info)
+        self._info_label = QLabel()
+        self._info_label.setProperty("role", "meta")
+        self._info_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        layout.addWidget(self._info_label)
 
-        # 按钮
         btn_row = QHBoxLayout()
         btn_row.setSpacing(6)
         fill_btn = QPushButton("填写")
@@ -168,9 +154,29 @@ class TemplateCard(QFrame):
         btn_row.addWidget(design_btn)
         layout.addLayout(btn_row)
 
+    def _set_thumb(self, thumb_path: str):
+        pixmap = QPixmap()
+        if thumb_path and os.path.exists(thumb_path):
+            pixmap = QPixmap(thumb_path)
+        if not pixmap.isNull():
+            pixmap = pixmap.scaled(
+                216, 150, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        self._thumb_label.setPixmap(pixmap)
+
+    def refresh(self, template: TemplateMeta, thumb_path: str):
+        """复用卡片时刷新显示内容"""
+        self.template = template
+        self._name_label.setText(template.name)
+        self._info_label.setText(
+            f"{template.page_count} 页 · {len(template.fields)} 个字段 · "
+            f"{format_time(template.updated_at)}"
+        )
+        self._set_thumb(thumb_path)
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            # 点击卡片主体 → 直接填写
             self.clicked.emit(self.template, "fill")
             return
         super().mousePressEvent(event)
@@ -183,10 +189,18 @@ class HomePage(QWidget):
     template_deleted = Signal(str)
     help_requested = Signal()
 
+    SEARCH_DEBOUNCE_MS = 300
+
     def __init__(self, template_manager, parent=None):
         super().__init__(parent)
         self.template_manager = template_manager
         self._templates: list[TemplateMeta] = []
+        self._cards: dict[str, TemplateCard] = {}  # 卡片复用缓存
+        self._thumb_cache: dict[str, QPixmap] = {}  # 缩略图 pixmap 缓存
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(self.SEARCH_DEBOUNCE_MS)
+        self._search_timer.timeout.connect(self.refresh)
         self._setup_ui()
 
     def _setup_ui(self):
@@ -194,7 +208,6 @@ class HomePage(QWidget):
         layout.setContentsMargins(24, 16, 24, 16)
         layout.setSpacing(12)
 
-        # ── 顶部 ──
         top = QHBoxLayout()
         top.setSpacing(10)
 
@@ -237,7 +250,6 @@ class HomePage(QWidget):
 
         layout.addLayout(top)
 
-        # ── 卡片墙 ──
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self._cards_host = QWidget()
@@ -245,7 +257,6 @@ class HomePage(QWidget):
         self.scroll.setWidget(self._cards_host)
         layout.addWidget(self.scroll, stretch=1)
 
-        # ── 空状态 / 无结果状态 ──
         self._empty_state = self._build_state(
             "还没有模板",
             "上传一张 PDF 表单开始吧：画好填写框之后，就能反复快速填写、导出和打印。",
@@ -314,23 +325,31 @@ class HomePage(QWidget):
         self._render_cards()
 
     def _render_cards(self):
-        # 清空旧卡片
-        while self._flow.count():
-            item = self._flow.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
+        seen: set[str] = set()
         for tmpl in self._templates:
+            seen.add(tmpl.id)
             thumb_path = self.template_manager.get_thumbnail_path(tmpl.id)
             if not thumb_path:
                 thumb_path = self._ensure_thumb(tmpl)
-            card = TemplateCard(tmpl, thumb_path)
-            card.clicked.connect(self._on_card_clicked)
-            card.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-            card.customContextMenuRequested.connect(
-                lambda pos, t=tmpl: self._show_context_menu(pos, t)
-            )
-            self._flow.addWidget(card)
+            card = self._cards.get(tmpl.id)
+            if card is None:
+                card = TemplateCard(tmpl, thumb_path)
+                card.clicked.connect(self._on_card_clicked)
+                card.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                card.customContextMenuRequested.connect(
+                    lambda pos, t=tmpl: self._show_context_menu(pos, t)
+                )
+                self._cards[tmpl.id] = card
+                self._flow.addWidget(card)
+            else:
+                card.refresh(tmpl, thumb_path)
+
+        # 移除不在当前结果里的卡片
+        stale = [tid for tid in self._cards if tid not in seen]
+        for tid in stale:
+            card = self._cards.pop(tid)
+            self._flow.removeWidget(card)
+            card.deleteLater()
 
         has_templates = bool(self._templates)
         self.scroll.setVisible(has_templates)
@@ -347,10 +366,10 @@ class HomePage(QWidget):
     def _ensure_thumb(self, tmpl: TemplateMeta) -> str:
         """老数据没有缩略图时补渲染一张"""
         try:
-            pdf_path = self.template_manager.get_pdf_path(tmpl.id)
+            pdf_path = self.template_manager.pdf_path(tmpl.id)
             if os.path.exists(pdf_path):
                 pixmap = render_thumbnail(pdf_path, 0, 96)
-                path = self.template_manager._thumb_path(tmpl.id)
+                path = self.template_manager.thumb_path(tmpl.id)
                 pixmap.save(path, "PNG")
                 return path
         except Exception:
@@ -400,6 +419,7 @@ class HomePage(QWidget):
         )
         if reply == QMessageBox.StandardButton.Yes:
             self.template_manager.delete(template.id)
+            self._cards.pop(template.id, None)
             self.template_deleted.emit(template.id)
             self.refresh()
 
@@ -416,7 +436,8 @@ class HomePage(QWidget):
                 QMessageBox.critical(self, "导出失败", str(e))
 
     def _on_search(self, text: str):
-        self.refresh()
+        # 300ms 防抖：停止输入后才真正刷新卡片墙
+        self._search_timer.start()
 
     def _on_new_template(self):
         filepath, _ = QFileDialog.getOpenFileName(
