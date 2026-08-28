@@ -280,6 +280,10 @@ class PdfCanvas(QGraphicsView):
         if self._source is not None:
             self._source.close()
             self._source = None
+        # 重置页面状态，防止散落调用 show_page 访问已释放的 source
+        self._page_count = 0
+        self._current_page = 0
+        self._page_settings = []
 
     def closeEvent(self, event):
         self.release_pdf()
@@ -1057,12 +1061,28 @@ class PdfCanvas(QGraphicsView):
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
         mods = event.modifiers()
+        # Shift+滚轮 → 翻页
         if mods == Qt.KeyboardModifier.ShiftModifier:
             if delta > 0 and self._current_page > 0:
                 self.set_current_page(self._current_page - 1)
             elif delta < 0 and self._current_page < self._page_count - 1:
                 self.set_current_page(self._current_page + 1)
             return
+        # Ctrl+滚轮 → 缩放
+        if mods == Qt.KeyboardModifier.ControlModifier:
+            self._zoom_by_wheel(delta)
+            return
+        # 普通滚轮：页面放大超出视口时滚动（符合 PDF 阅读器习惯），否则缩放
+        vbar = self.verticalScrollBar()
+        hbar = self.horizontalScrollBar()
+        if vbar.maximum() > 0:
+            vbar.setValue(vbar.value() - delta)
+        elif hbar.maximum() > 0:
+            hbar.setValue(hbar.value() - delta)
+        else:
+            self._zoom_by_wheel(delta)
+
+    def _zoom_by_wheel(self, delta: int):
         factor = 1.15 if delta > 0 else 1 / 1.15
         self._zoom = min(3.0, max(0.5, self._zoom * factor))
         self._apply_zoom()

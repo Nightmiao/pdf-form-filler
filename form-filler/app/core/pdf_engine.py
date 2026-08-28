@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import math
+import threading
 import fitz  # PyMuPDF
 from app.qt import QtGui, QtCore
 
@@ -86,7 +87,6 @@ class PdfSource:
     """
 
     def __init__(self, pdf_path: str):
-        import threading
         self.path = pdf_path
         with open(pdf_path, "rb") as f:
             data = f.read()
@@ -120,10 +120,11 @@ class PdfSource:
         return out
 
     def close(self):
-        try:
-            self.doc.close()
-        except Exception:
-            pass
+        with self._lock:
+            try:
+                self.doc.close()
+            except Exception:
+                pass
 
 
 def get_page_count(pdf_path: str) -> int:

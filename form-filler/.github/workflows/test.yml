@@ -1,0 +1,36 @@
+name: 回归测试（双 Qt 环境）
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-qt6:
+    name: PySide6 (Qt6) / Python 3.12
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install PySide6 PyMuPDF
+      - run: python tests/smoke_test.py
+      - run: python tests/audit_verify.py
+
+  test-qt5-win7-compat:
+    name: PySide2 (Qt5) / Python 3.9 — Windows 7 兼容分支
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+      - run: pip install PySide2==5.15.2.1 PyMuPDF==1.23.26 PyMuPDFb==1.23.22
+      - run: python tests/smoke_test.py
+      - run: python tests/audit_verify.py

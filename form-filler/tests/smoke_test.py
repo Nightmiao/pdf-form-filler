@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import math
 import fitz
-from app.qt import QtWidgets, QtGui, printer_high_resolution, printer_device_pixel
+from app.qt import QtWidgets, QtGui, QT6, printer_high_resolution, printer_device_pixel
 
 QApplication = QtWidgets.QApplication
 QFont = QtGui.QFont
@@ -34,9 +34,15 @@ def qwait(ms: int):
 
 
 from app.ui.theme import APP_STYLESHEET
-_qfd = QFontDatabase()
-if not any("YaHei" in f for f in _qfd.families()):
-    _qfd.addApplicationFont("C:/Windows/Fonts/msyh.ttc")
+if QT6:
+    # Qt6 静态方法（避免 QFontDatabase 构造的弃用告警）
+    if not any("YaHei" in f for f in QFontDatabase.families()):
+        QFontDatabase.addApplicationFont("C:/Windows/Fonts/msyh.ttc")
+else:
+    # Qt5 为实例方法
+    _qfd = QFontDatabase()
+    if not any("YaHei" in f for f in _qfd.families()):
+        _qfd.addApplicationFont("C:/Windows/Fonts/msyh.ttc")
 app.setFont(QFont("Microsoft YaHei", 10))
 app.setStyle("Fusion")
 app.setStyleSheet(APP_STYLESHEET)

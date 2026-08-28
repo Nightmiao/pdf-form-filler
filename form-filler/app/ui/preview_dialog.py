@@ -90,6 +90,7 @@ class PreviewDialog(QDialog):
         self._zoom_label.setFixedWidth(44)
         self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._zoom_label.setStyleSheet("color:#374151; font-weight:600;")
+        self._zoom_label.setToolTip("100% = 适应窗口宽度；点 + / − 可放大缩小预览")
         head.addWidget(self._zoom_label)
 
         self._zoom_in_btn = QPushButton("＋")
@@ -200,7 +201,8 @@ class PreviewDialog(QDialog):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._apply_zoom()
+        # 防抖：拖拽窗口边缘时避免逐帧全量重缩放每页大图
+        QtCore.QTimer.singleShot(80, self._apply_zoom)
 
     # ── 导出 / 打印 ───────────────────────────────
 
