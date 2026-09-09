@@ -54,6 +54,18 @@
 
 用户数据（模板、填写记录）保存在用户目录的 .form-filler/data 下。
 
+### 启动方式（Windows 推荐第 1 种）
+
+1. **双击项目根目录的 `run_app.bat`** —— 自动使用项目自带的 `venv`，无需手动激活；
+2. 命令行启动（注意要用 venv 里的 Python）：
+
+       venv\Scripts\python.exe main.py
+
+3. 打包后的 EXE：`dist` 目录下的可执行文件。
+
+> ⚠️ 不要用 `py main.py` 或系统里的 `python main.py`：依赖（PySide6 等）装在项目内的
+> `venv` 目录里，系统 Python 没有这些包，会报 `ModuleNotFoundError: No module named 'PySide6'`。
+
 ## 自动化测试
 
 离屏冒烟/回归测试覆盖：建模板 → 画字段 → 页面旋转精确换算 → 撤销/重做 → 排序同步 → 跨页 Tab → 填写/保存 → 烧录校验（含 15° 任意角度与页面矫正角导出）→ 记录切换持久化 → 非法字段防御 → 导出路径防覆盖 → 预览异常保护 → 缩略图异步渲染 → LRU 缓存 → 搜索防抖 → 必填校验，并输出各界面截图：
