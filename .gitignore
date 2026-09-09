@@ -34,3 +34,5 @@ form-filler/dist/
 form-filler/vendor/
 form-filler/venv-*/
 form-filler/dist/
+# 启动脚本运行日志
+form-filler/run_app.log

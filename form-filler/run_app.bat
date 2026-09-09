@@ -1,35 +1,46 @@
 @echo off
-chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
 
 REM ============================================================
-REM  狸猫猫表单 — 一键启动（自动使用项目自带的虚拟环境 venv）
+REM  Form Filler - one click launcher
+REM  Uses the project venv. ASCII only on purpose:
+REM  Chinese/UTF-8 text in .bat breaks cmd.exe parsing on Windows 7.
 REM ============================================================
 
+set "LOG=%~dp0run_app.log"
+echo [%date% %time%] launcher start, cwd=%CD% > "%LOG%"
+
 if /i "%~1"=="check" (
-    echo [检查] 当前目录: %CD%
-    if exist "venv\Scripts\pythonw.exe" (echo [检查] 找到虚拟环境 venv) else (echo [检查] 未找到虚拟环境)
+    echo [check] cwd: %CD%
+    if exist "venv\Scripts\pythonw.exe" (echo [check] venv found) else (echo [check] venv NOT found)
     goto :eof
 )
 
 if exist "venv\Scripts\pythonw.exe" (
+    echo [%date% %time%] launching venv pythonw >> "%LOG%"
     start "" "venv\Scripts\pythonw.exe" main.py
+    if errorlevel 1 (
+        echo [ERROR] failed to launch venv pythonw >> "%LOG%"
+        echo [ERROR] failed to launch venv pythonw & pause & exit /b 1
+    )
     exit /b 0
 )
 
 if exist "venv\Scripts\python.exe" (
+    echo [%date% %time%] launching venv python >> "%LOG%"
     "venv\Scripts\python.exe" main.py
     exit /b %errorlevel%
 )
 
+echo [%date% %time%] venv not found, fallback to system python >> "%LOG%"
 echo.
-echo 未找到虚拟环境 venv，改用系统 Python 启动...
-echo 若提示 ModuleNotFoundError: PySide6，请按 README 创建虚拟环境并安装依赖。
+echo venv not found. Trying system Python...
+echo If you see ModuleNotFoundError: PySide6, create the venv per README first.
 echo.
 python main.py
 if errorlevel 1 (
     echo.
-    echo 启动失败。也可以直接运行打包好的 EXE：dist 目录下的程序。
+    echo Failed. You can also run the packaged EXE in the dist folder.
     pause
 )

@@ -57,6 +57,7 @@
 ### 启动方式（Windows 推荐第 1 种）
 
 1. **双击项目根目录的 `run_app.bat`** —— 自动使用项目自带的 `venv`，无需手动激活；
+   若双击没反应，项目根目录会生成 `run_app.log` 记录启动过程（便于排查）；
 2. 命令行启动（注意要用 venv 里的 Python）：
 
        venv\Scripts\python.exe main.py
