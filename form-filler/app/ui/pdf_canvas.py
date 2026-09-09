@@ -835,6 +835,7 @@ class PdfCanvas(QGraphicsView):
 
             elif self._mode == self.MODE_FILL:
                 if field_items:
+                    self.setFocus(Qt.FocusReason.MouseFocusReason)
                     self.select_field(field_items[0].field.id)
                     self.field_selected_sig.emit(field_items[0].field.id)
                 else:

@@ -6,8 +6,9 @@ from __future__ import annotations
 import os
 
 from app.qt import (
-    QtWidgets, QtCore, QtGui,
+    QtWidgets, QtCore, QtGui, Qt,
     QAction, std_button, standard_key, dialog_exec, msg_icon, msg_button_role,
+    event_key_press,
 )
 
 QMainWindow = QtWidgets.QMainWindow
@@ -137,6 +138,10 @@ class MainWindow(QMainWindow):
         self.right_panel.addWidget(self.field_fill_panel)
         main_layout.addWidget(self.right_panel)
 
+        # 应用级事件过滤器：填写模式下把 Tab/Shift+Tab 一律交给"下一个/上一个字段"，
+        # 不论当前焦点落在输入框、下拉框、按钮还是画布上。
+        QtWidgets.QApplication.instance().installEventFilter(self)
+
         # 状态栏
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -163,6 +168,35 @@ class MainWindow(QMainWindow):
         print_action.setShortcut(standard_key("Print"))
         print_action.triggered.connect(self._on_print)
         self.addAction(print_action)
+
+    # ── 全局事件过滤（填写模式的 Tab 导航）──────────
+
+    def eventFilter(self, obj, event):
+        if (
+            self.center_stack.currentIndex() == self.MODE_FILL
+            and event.type() == event_key_press()
+        ):
+            key = event.key()
+            if key in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
+                # 模态对话框（预览 / 打印 / 新建记录等）里保持系统默认行为
+                if QtWidgets.QApplication.activeModalWidget() is None:
+                    try:
+                        same_window = obj.window() is self
+                    except AttributeError:
+                        same_window = False
+                    if same_window:
+                        # Ctrl+Tab 放行：多行文本框里用于插入制表符
+                        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                            return False
+                        backwards = (key == Qt.Key.Key_Backtab) or bool(
+                            event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+                        )
+                        if backwards:
+                            self.fill_mode.focus_prev_field()
+                        else:
+                            self.fill_mode.focus_next_field()
+                        return True
+        return super().eventFilter(obj, event)
 
     # ── 新手引导 ──────────────────────────────────
 

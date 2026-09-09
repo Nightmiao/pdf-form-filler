@@ -205,6 +205,24 @@ if QTest is not None:
     QTest.keyClick(w.field_fill_panel._current_widget, Qt.Key.Key_Tab)
     app.processEvents()
     assert w.field_fill_panel._current_field_id != before, "widget Tab should move to next field"
+    # 焦点在"工具栏按钮"和"记录下拉框"上时，Tab 也应切换字段（应用级拦截）
+    w._enter_fill_mode(w._current_template, w._current_record)
+    app.processEvents()
+    w.fill_mode.canvas.select_field(f1.id)
+    app.processEvents()
+    before2 = w.field_fill_panel._current_field_id
+    w.fill_mode._title_label.setFocus()  # 任意非输入控件
+    app.processEvents()
+    QTest.keyClick(w.fill_mode._title_label, Qt.Key.Key_Tab)
+    app.processEvents()
+    assert w.field_fill_panel._current_field_id != before2, "Tab on non-input widget should move field"
+    w.field_fill_panel._record_combo.setFocus()
+    app.processEvents()
+    before3 = w.field_fill_panel._current_field_id
+    QTest.keyClick(w.field_fill_panel._record_combo, Qt.Key.Key_Tab)
+    app.processEvents()
+    assert w.field_fill_panel._current_field_id != before3, "Tab on combo should move field"
+
     w.fill_mode.canvas.select_field(f1.id)
     app.processEvents()
     print("keyboard TAB navigation OK")

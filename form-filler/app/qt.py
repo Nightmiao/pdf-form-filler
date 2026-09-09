@@ -56,6 +56,7 @@ else:
             self.WidgetAttribute = _Scoped(base)
             self.ContextMenuPolicy = _Scoped(base)
             self.FocusPolicy = _Scoped(base)
+            self.FocusReason = _Scoped(base)
             self.WindowType = _Scoped(base)
             self.MatchFlag = _Scoped(base)
             self.Key = _Scoped(base)  # Qt.Key.Key_PageUp → Qt.Key_PageUp

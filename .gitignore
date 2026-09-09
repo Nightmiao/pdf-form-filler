@@ -36,3 +36,9 @@ form-filler/venv-*/
 form-filler/dist/
 # 启动脚本运行日志
 form-filler/run_app.log
+# 打包产物（EXE/安装包，体积大不进 git）
+form-filler/dist-win7/
+form-filler/build-win7/
+form-filler/build-installer/
+form-filler/installer/sfx-payload/*.exe
+form-filler/installer/LMM-Setup.exe

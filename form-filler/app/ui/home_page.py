@@ -33,6 +33,7 @@ QTimer = QtCore.QTimer
 QPixmap = QtGui.QPixmap
 
 from app.ui.theme import apply_role, icon_of
+from app.version import VERSION_TEXT
 from app.core.field_model import TemplateMeta
 from app.core.pdf_engine import render_thumbnail
 
@@ -293,9 +294,16 @@ class HomePage(QWidget):
         layout.addWidget(self._no_result_state, stretch=1)
         self._no_result_state.hide()
 
+        bottom = QHBoxLayout()
         self._result_count = QLabel("")
         self._result_count.setProperty("role", "hint")
-        layout.addWidget(self._result_count)
+        bottom.addWidget(self._result_count)
+        bottom.addStretch()
+        version_label = QLabel(VERSION_TEXT)
+        version_label.setProperty("role", "hint")
+        version_label.setToolTip("软件版本 · 构建日期（确认是否最新版时看这里）")
+        bottom.addWidget(version_label)
+        layout.addLayout(bottom)
 
     def _build_state(self, title_text: str, desc: str, show_buttons: bool) -> QFrame:
         frame = QFrame()
