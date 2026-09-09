@@ -33,7 +33,8 @@ def main():
     window.resize(1280, 800)
     window.show()
 
-    sys.exit(app.exec_() if hasattr(app, "exec_") else app.exec())
+    # PySide6 用 exec()；PySide2(Qt5) 若没有 exec 则退回 exec_
+    sys.exit(app.exec() if hasattr(app, "exec") else app.exec_())
 
 
 if __name__ == "__main__":
