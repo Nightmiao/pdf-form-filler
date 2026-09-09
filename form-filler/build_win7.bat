@@ -1,21 +1,21 @@
 @echo off
-chcp 65001 >nul
+chcp 936 >nul
 REM ============================================================
-REM  æ„å»º Windows 7 å…¼å®¹ç‰ˆï¼ˆä¸€é”®ç»¿è‰² EXEï¼‰
-REM  å‰æï¼šæœ¬æœºï¼ˆè”ç½‘çš„æ„å»ºæœºï¼Œå»ºè®® Win10/11ï¼‰è£…æœ‰ Python 3.9.13
-REM  äº§ç‰©ï¼šdist\ç‹¸çŒ«çŒ«è¡¨å•.exe â€”â€” æ‹·åˆ° Win7 æœºå™¨åŒå‡»å³å¯è¿è¡Œ
+REM  ¹¹½¨ Windows 7 ¼æÈİ°æ£¨Ò»¼üÂÌÉ« EXE£©
+REM  Ç°Ìá£º±¾»ú×°ÓĞ Python 3.8/3.9£¨vendor/wheels ÄÚº¬Á½°æÀëÏßÒÀÀµ£©
+REM  ²úÎï£ºdist\ÀêÃ¨Ã¨±íµ¥.exe ¡ª¡ª ¿½µ½ Win7 »úÆ÷Ë«»÷¼´¿ÉÔËĞĞ
 REM ============================================================
 
-where py >nul 2>nul || (echo [é”™è¯¯] æœªæ‰¾åˆ° Python å¯åŠ¨å™¨ py.exeï¼Œè¯·å…ˆå®‰è£… python.org çš„ Python 3.9.13 & pause & exit /b 1)
-py -3.9 -c "import sys; print(sys.version)" 2>nul || (echo [é”™è¯¯] æœªæ‰¾åˆ° Python 3.9ï¼Œè¯·å…ˆå®‰è£… python.org çš„ Python 3.9.13 & pause & exit /b 1)
+where py >nul 2>nul || (echo [´íÎó] Î´ÕÒµ½ Python Æô¶¯Æ÷ py.exe£¬ÇëÏÈ°²×° python.org µÄ Python 3.9.13 & pause & exit /b 1)
+py -3.9 -c "import sys; print(sys.version)" 2>nul || py -3.8 -c "import sys; print(sys.version)" 2>nul || (echo [´íÎó] Î´ÕÒµ½ Python 3.8/3.9£¬ÇëÏÈ°²×° python.org µÄ¶ÔÓ¦°æ±¾ & pause & exit /b 1)
 
 if not exist venv-win7 (
-    echo [1/4] åˆ›å»º Python 3.9 è™šæ‹Ÿç¯å¢ƒ...
-    py -3.9 -m venv venv-win7
+    echo [1/4] ´´½¨ Python 3.9 ĞéÄâ»·¾³...
+    py -3.9 -m venv venv-win7 2>nul || py -3.8 -m venv venv-win7
 )
 call venv-win7\Scripts\activate.bat
 
-echo [2/4] å®‰è£…ä¾èµ–ï¼ˆä¼˜å…ˆä½¿ç”¨ç¦»çº¿ wheelï¼‰...
+echo [2/4] °²×°ÒÀÀµ£¨ÓÅÏÈÊ¹ÓÃÀëÏß wheel£©...
 if exist vendor\wheels (
     pip install --no-index --find-links vendor\wheels -r requirements-win7.txt pyinstaller==5.13.2
     if errorlevel 1 pip install -r requirements-win7.txt pyinstaller==5.13.2
@@ -23,12 +23,12 @@ if exist vendor\wheels (
     pip install -r requirements-win7.txt pyinstaller==5.13.2
 )
 
-echo [3/4] æ‰“åŒ…ï¼ˆonefile å•æ–‡ä»¶ EXEï¼‰...
-pyinstaller --noconfirm --clean --onefile --windowed --name "ç‹¸çŒ«çŒ«è¡¨å•" --icon app\resources\icons\app.ico main.py
+echo [3/4] ´ò°ü£¨onefile µ¥ÎÄ¼ş EXE£©...
+pyinstaller --noconfirm --clean --onefile --windowed --name "ÀêÃ¨Ã¨±íµ¥" --icon app\resources\icons\app.ico main.py
 
-echo [4/4] å®Œæˆï¼
+echo [4/4] Íê³É£¡
 echo.
-echo EXE ä½äº dist\ç‹¸çŒ«çŒ«è¡¨å•.exe
-echo éƒ¨ç½²åˆ° Windows 7ï¼šè¯¦è§ docs\Windows7-ç¦»çº¿éƒ¨ç½².md
+echo EXE Î»ÓÚ dist\ÀêÃ¨Ã¨±íµ¥.exe
+echo ²¿Êğµ½ Windows 7£ºÏê¼û docs\Windows7-ÀëÏß²¿Êğ.md
 pause
 

@@ -154,6 +154,19 @@ class PreviewDialog(QDialog):
             tmp.name,
         )
 
+        # 自检：有填写内容但烧录结果提取不到文字 → 明确报错而不是展示空白页
+        values = self._record.values or {}
+        if any(str(v).strip() for v in values.values()):
+            import fitz
+            _chk = fitz.open(self._output_path)
+            _text = "".join(pg.get_text() for pg in _chk).strip()
+            _chk.close()
+            if not _text:
+                raise RuntimeError(
+                    "填写内容未能写入预览文件（PDF 可能受保护）。\n"
+                    "请先使用「导出 PDF」检查填写内容。"
+                )
+
         self._images = pdf_to_images(self._output_path, dpi=self.PREVIEW_DPI)
         self._page_labels = []
         for i, img in enumerate(self._images):

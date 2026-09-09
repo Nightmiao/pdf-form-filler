@@ -258,6 +258,45 @@ assert abs(line2["dir"][1] + math.sin(math.radians(3))) < 0.01, f"page-rot dir m
 d2.close()
 print("page rotation export OK")
 
+# ── 打印回归：QPrinter 输出到 PDF 文件，验证页面里真的能看到填写内容 ──
+# 背景：曾出现"打印空白"——高分辨率打印机下按打印机 DPI 渲染的位图过大，
+# QPixmap/QImage 加载失败(0x0)，绘制整页空白。此处模拟打印并检查像素。
+w._on_field_value_changed(f1.id, "打印验证")
+import app.ui.print_helper as ph
+printed = os.path.join(data_dir, "printed.pdf")
+_real_qprinter = ph.QPrinter
+def _fake_qprinter(*a, **k):
+    p = _real_qprinter(*a, **k)
+    p.setOutputFileName(printed)
+    return p
+class _FakePrintDialog:
+    def __init__(self, printer, parent=None):
+        self.printer = printer
+    def exec_(self):
+        return 1
+    def exec(self):
+        return 1
+ph.QPrinter = _fake_qprinter
+ph.QPrintDialog = _FakePrintDialog
+ph.print_filled_pdf(w._current_template, w._current_record, w.template_manager, w)
+ph.QPrinter = _real_qprinter
+assert os.path.getsize(printed) > 1000, "printed.pdf empty"
+d_p = fitz.open(printed)
+pix_p = d_p[0].get_pixmap(matrix=fitz.Matrix(1, 1))
+samples = pix_p.samples
+stride = pix_p.stride
+n = pix_p.n
+dark = 0
+for yy in range(140, 170):  # 姓名字段区域（含 10pt 页边距偏移）
+    row = samples[yy * stride:(yy + 1) * stride]
+    for xx in range(110, 300, 2):
+        off = xx * n
+        if row[off] < 200 and row[off + 1] < 200 and row[off + 2] < 200:
+            dark += 1
+d_p.close()
+assert dark > 100, f"printed page missing filled text (dark={dark})"
+print("print-to-pdf regression OK (dark px:", dark, ")")
+
 # ── #4 非法字段防御：越界页/坏 rect 自动跳过 ──
 bad1 = FieldDefinition(name="坏", page=99, rect=(0, 0, 100, 30))
 bad2 = FieldDefinition(name="坏2", page=0, rect=(0, 0, float("nan"), 30))
