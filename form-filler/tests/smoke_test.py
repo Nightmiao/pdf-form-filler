@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import math
 import fitz
-from app.qt import QtWidgets, QtGui, QT6, printer_high_resolution, printer_device_pixel
+from app.qt import QtWidgets, QtGui, Qt, QT6, printer_high_resolution, printer_device_pixel
 
 QApplication = QtWidgets.QApplication
 QFont = QtGui.QFont
@@ -187,6 +187,27 @@ w.fill_mode.focus_next_field()
 assert w.fill_mode.canvas.current_page == 1, "cross-page tab failed"
 assert w.fill_mode.canvas._selected_field_item.field.id == f3.id
 print("cross-page tab OK")
+
+# ── 键盘级 TAB 回归：曾出现 Tab 在窗口控件间乱跳 ──
+if QTest is not None:
+    canvas_f = w.fill_mode.canvas
+    w.fill_mode.canvas.select_field(f1.id)
+    app.processEvents()
+    before = w.field_fill_panel._current_field_id
+    QTest.keyClick(canvas_f, Qt.Key.Key_Tab)
+    app.processEvents()
+    assert w.field_fill_panel._current_field_id != before, "canvas Tab should move to next field"
+    # Qt 里 Shift+Tab 以 Key_Backtab 送达
+    QTest.keyClick(w.field_fill_panel._current_widget, Qt.Key.Key_Backtab)
+    app.processEvents()
+    assert w.field_fill_panel._current_field_id == before, "Shift+Tab should move back"
+    # 输入框内 Tab 前进
+    QTest.keyClick(w.field_fill_panel._current_widget, Qt.Key.Key_Tab)
+    app.processEvents()
+    assert w.field_fill_panel._current_field_id != before, "widget Tab should move to next field"
+    w.fill_mode.canvas.select_field(f1.id)
+    app.processEvents()
+    print("keyboard TAB navigation OK")
 
 # ── #1 记录切换/新建/删除前，旧记录修改必须落盘 ──
 rec_a_id = w._current_record.id

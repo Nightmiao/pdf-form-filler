@@ -944,6 +944,21 @@ class PdfCanvas(QGraphicsView):
 
     # ── 键盘事件 ──────────────────────────────────
 
+    def focusNextPrevChild(self, next_child: bool) -> bool:
+        """接管 Tab / Shift+Tab。
+
+        Qt 在 QWidget::event() 里对 Tab 会先调用本方法（窗口级焦点切换），
+        返回 True 后就不会再走 keyPressEvent。填写模式下必须在这里切换
+        表单字段，否则焦点会在整个窗口的控件之间乱跳。
+        """
+        if self._mode == self.MODE_FILL:
+            if next_child:
+                self.focus_next_field()
+            else:
+                self.focus_prev_field()
+            return True
+        return super().focusNextPrevChild(next_child)
+
     def keyPressEvent(self, event: QKeyEvent):
         key = event.key()
         mods = event.modifiers()

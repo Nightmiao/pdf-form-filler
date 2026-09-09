@@ -739,9 +739,22 @@ class FieldFillPanel(QWidget):
     # ── TAB 快速填写 ──────────────────────────────
 
     def eventFilter(self, obj, event):
-        if event.type() == event_key_press() and event.key() == Qt.Key.Key_Tab:
-            if not isinstance(obj, QTextEdit):
-                if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+        if event.type() == event_key_press():
+            key = event.key()
+            # Qt 里 Shift+Tab 会以 Key_Backtab 送达，必须一并处理
+            is_tab = key == Qt.Key.Key_Tab
+            is_backtab = key == Qt.Key.Key_Backtab
+            if is_tab or is_backtab:
+                # 多行文本框里 Ctrl+Tab 才插入制表符；普通 Tab 仍然跳到下一项
+                # （填表场景下用户预期 Tab=下一项，与浏览器/PDF 表单一致）
+                if isinstance(obj, QTextEdit) and (
+                    event.modifiers() & Qt.KeyboardModifier.ControlModifier
+                ):
+                    return False
+                backwards = is_backtab or bool(
+                    event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+                )
+                if backwards:
                     self.tab_prev_requested.emit()
                 else:
                     self.tab_next_requested.emit()
