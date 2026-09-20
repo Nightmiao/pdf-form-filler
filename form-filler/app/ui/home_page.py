@@ -32,7 +32,7 @@ QPoint = QtCore.QPoint
 QTimer = QtCore.QTimer
 QPixmap = QtGui.QPixmap
 
-from app.ui.theme import apply_role, icon_of
+from app.ui.theme import apply_role, icon_of, step_glyph, make_elided_label
 from app.version import VERSION_TEXT
 from app.core.field_model import TemplateMeta
 from app.core.pdf_engine import render_thumbnail
@@ -151,10 +151,12 @@ class TemplateCard(QFrame):
         self._thumb_label.setFixedHeight(150)
         layout.addWidget(self._thumb_label)
 
-        self._name_label = QLabel(self.template.name)
-        self._name_label.setStyleSheet("font-weight: 700; font-size: 13px; color: #1F2329; background: transparent;")
-        self._name_label.setWordWrap(True)
-        self._name_label.setMaximumHeight(38)
+        # 名称超长时用省略号，不再硬裁（原实现 wordWrap+固定高度会直接切掉半行）
+        self._name_label = make_elided_label(self.template.name)
+        self._name_label.setStyleSheet(
+            "font-weight: 700; font-size: 13px; color: #1F2329; background: transparent;"
+        )
+        self._name_label.setFixedHeight(20)
         self._name_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(self._name_label)
 
@@ -210,6 +212,7 @@ class HomePage(QWidget):
     template_selected = Signal(TemplateMeta, str)  # template, action
     template_deleted = Signal(str)
     help_requested = Signal()
+    diagnose_requested = Signal()
 
     SEARCH_DEBOUNCE_MS = 300
 
@@ -236,18 +239,19 @@ class HomePage(QWidget):
         title_box.setSpacing(2)
         title = QLabel("我的模板")
         title.setObjectName("pageTitle")
-        subtitle = QLabel("为 PDF 表单画好填写框，之后反复快速填写、导出、打印")
-        subtitle.setProperty("role", "hint")
+        # 副标题用可省略标签：否则它的整行宽度会把窗口最小宽度顶到 1418px，
+        # 在 1024x768 的机器上把工具栏按钮挤进溢出菜单
+        subtitle = make_elided_label(
+            "为 PDF 表单画好填写框，之后反复快速填写、导出、打印", role="hint"
+        )
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
-        top.addLayout(title_box)
-
-        top.addStretch()
+        top.addLayout(title_box, stretch=1)
 
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("搜索模板…")
         self.search_input.setClearButtonEnabled(True)
-        self.search_input.setFixedWidth(220)
+        self.search_input.setFixedWidth(190)
         self.search_input.textChanged.connect(self._on_search)
         top.addWidget(self.search_input)
 
@@ -255,6 +259,13 @@ class HomePage(QWidget):
         help_btn.setIcon(icon_of(self, "SP_MessageBoxInformation"))
         help_btn.clicked.connect(self.help_requested)
         top.addWidget(help_btn)
+
+        # 自检入口：目标机是离线 Win7，打印/显示异常时用户能一键生成诊断报告
+        diag_btn = QPushButton("运行自检")
+        diag_btn.setIcon(icon_of(self, "SP_MessageBoxQuestion"))
+        diag_btn.setToolTip("检查字体、打印机与打印落点，生成一份可发给开发者的报告")
+        diag_btn.clicked.connect(self.diagnose_requested)
+        top.addWidget(diag_btn)
 
         import_btn = QPushButton("导入模板")
         import_btn.setIcon(icon_of(self, "SP_DialogOpenButton"))
@@ -312,9 +323,11 @@ class HomePage(QWidget):
         v.setAlignment(Qt.AlignmentFlag.AlignCenter)
         v.setSpacing(10)
 
-        icon = QLabel("📄")
+        icon = QLabel()
         icon.setObjectName("emptyIcon")
+        icon.setPixmap(step_glyph("document", 64))
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setFixedHeight(74)
         v.addWidget(icon)
 
         t = QLabel(title_text)
@@ -326,7 +339,10 @@ class HomePage(QWidget):
         d.setObjectName("emptyDesc")
         d.setAlignment(Qt.AlignmentFlag.AlignCenter)
         d.setWordWrap(True)
-        v.addWidget(d)
+        # wordWrap 的 QLabel 光设 maxWidth 没用：换行后的 sizeHint 会算成很窄的一条，
+        # 文案被折成三四行挤在中间。固定宽度才能得到预期的版式。
+        d.setFixedWidth(420)
+        v.addWidget(d, alignment=Qt.AlignmentFlag.AlignCenter)
 
         if show_buttons:
             row = QHBoxLayout()

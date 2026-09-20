@@ -17,6 +17,7 @@ QHBoxLayout = QtWidgets.QHBoxLayout
 QStackedWidget = QtWidgets.QStackedWidget
 QStatusBar = QtWidgets.QStatusBar
 QLabel = QtWidgets.QLabel
+QPushButton = QtWidgets.QPushButton
 QMessageBox = QtWidgets.QMessageBox
 QFileDialog = QtWidgets.QFileDialog
 QInputDialog = QtWidgets.QInputDialog
@@ -29,6 +30,7 @@ from app.ui.fill_mode import FillMode
 from app.ui.thumbnail_bar import ThumbnailBar
 from app.ui.field_panel import FieldDesignPanel, FieldFillPanel
 from app.ui.onboarding import OnboardingDialog
+from app.ui.theme import apply_role
 from app.core.template_manager import TemplateManager
 from app.core.record_manager import RecordManager
 from app.core.settings import load_settings, save_settings
@@ -61,7 +63,9 @@ class MainWindow(QMainWindow):
 
     def _setup_ui(self):
         self.setWindowTitle("狸猫猫表单")
-        self.setMinimumSize(1024, 680)
+        # 最小尺寸按 1024x768 机器留出余量（含任务栏与窗口边框）；
+        # 太小会造成内容不可用，太大则在小屏上够不到右边的面板
+        self.setMinimumSize(940, 600)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -78,6 +82,12 @@ class MainWindow(QMainWindow):
         self.left_panel.addWidget(self.thumbnail_bar)
         main_layout.addWidget(self.left_panel)
 
+        # 窄屏（1024x768 这类机器）自动收起缩略图栏：
+        # 208 + 300 两个侧栏会只剩 516px 给中间，工具栏按钮会被挤进
+        # "»" 溢出菜单，用户就找不到「保存」「去填写」了。
+        self._sidebar_force = None          # None=自动；True/False=用户强制
+        self._narrow_threshold = 1180
+
         # 中央：模式区（0=首页 1=设计 2=填写）
         self.center_stack = QStackedWidget()
 
@@ -85,6 +95,7 @@ class MainWindow(QMainWindow):
         self.home_page.template_selected.connect(self._on_template_selected)
         self.home_page.template_deleted.connect(self._on_template_deleted)
         self.home_page.help_requested.connect(self._show_onboarding)
+        self.home_page.diagnose_requested.connect(self._run_diagnose)
         self.center_stack.addWidget(self.home_page)
 
         self.design_mode = DesignMode()
@@ -113,7 +124,7 @@ class MainWindow(QMainWindow):
         # 右侧面板
         self.right_panel = QStackedWidget()
         self.right_panel.setMinimumWidth(300)
-        self.right_panel.setMaximumWidth(360)
+        self.right_panel.setMaximumWidth(340)
 
         self.field_design_panel = FieldDesignPanel()
         self.field_design_panel.field_updated.connect(self._on_field_updated)
@@ -148,6 +159,49 @@ class MainWindow(QMainWindow):
         self._status_label = QLabel("就绪")
         self.status_bar.addWidget(self._status_label)
 
+        # 缩略图栏开关（窄屏会自动收起，这里给用户一个随时可点的入口）
+        self._sidebar_btn = QPushButton("缩略图")
+        self._sidebar_btn.setCheckable(True)
+        self._sidebar_btn.setChecked(True)
+        self._sidebar_btn.setText("隐藏缩略图")
+        apply_role(self._sidebar_btn, "toolbar")
+        self._sidebar_btn.setToolTip("显示 / 隐藏左侧缩略图栏 (Ctrl+B)")
+        self._sidebar_btn.clicked.connect(self._on_toggle_sidebar)
+        self.status_bar.addPermanentWidget(self._sidebar_btn)
+
+    def _on_toggle_sidebar(self, checked: bool = None):
+        """用户手动开关缩略图栏（手动设置优先于自动收起/展开）"""
+        want = self._sidebar_btn.isChecked() if checked is None else bool(checked)
+        self._sidebar_force = want
+        self._sync_sidebar_btn_text(want)
+        self._apply_sidebar()
+
+    def _sync_sidebar_btn_text(self, visible: bool):
+        if self._sidebar_btn is None:
+            return
+        self._sidebar_btn.blockSignals(True)
+        self._sidebar_btn.setChecked(visible)
+        self._sidebar_btn.setText("隐藏缩略图" if visible else "显示缩略图")
+        self._sidebar_btn.blockSignals(False)
+
+    def _sidebar_should_show(self) -> bool:
+        if self._sidebar_force is not None:
+            return self._sidebar_force
+        return self.width() >= self._narrow_threshold
+
+    def _apply_sidebar(self):
+        """编辑模式下按窗口宽度决定是否显示缩略图栏"""
+        if self.center_stack.currentIndex() == self.MODE_HOME:
+            self.left_panel.hide()
+            return
+        show = self._sidebar_should_show()
+        self.left_panel.setVisible(show)
+        self._sync_sidebar_btn_text(show)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_sidebar()
+
     def _setup_shortcuts(self):
         save_action = QAction("保存", self)
         save_action.setShortcut(standard_key("Save"))
@@ -168,6 +222,13 @@ class MainWindow(QMainWindow):
         print_action.setShortcut(standard_key("Print"))
         print_action.triggered.connect(self._on_print)
         self.addAction(print_action)
+
+        sidebar_action = QAction("显示/隐藏缩略图栏", self)
+        sidebar_action.setShortcut(QKeySequence("Ctrl+B"))
+        sidebar_action.triggered.connect(
+            lambda: self._on_toggle_sidebar(not self._sidebar_should_show())
+        )
+        self.addAction(sidebar_action)
 
     # ── 全局事件过滤（填写模式的 Tab 导航）──────────
 
@@ -212,6 +273,15 @@ class MainWindow(QMainWindow):
         self._settings["onboarding_done"] = True
         save_settings(self.data_dir, self._settings)
 
+    def _run_diagnose(self):
+        """首页「运行自检」：生成诊断报告（打印落点 + 环境 + 打印机）"""
+        try:
+            from app.core.diagnostics import show_report_dialog
+            path = show_report_dialog(self)
+            self._set_status(f"自检报告已保存 - {path}")
+        except Exception as e:
+            QMessageBox.critical(self, "自检失败", f"无法生成自检报告：\n{e}")
+
     # ── 模式切换 ──────────────────────────────────
 
     def _show_home(self):
@@ -226,7 +296,7 @@ class MainWindow(QMainWindow):
         self.design_mode.canvas.release_pdf()
         self.fill_mode.canvas.release_pdf()
         self.center_stack.setCurrentIndex(self.MODE_HOME)
-        self.left_panel.hide()
+        self._apply_sidebar()
         self.right_panel.hide()
         self.home_page.refresh()
         self.setWindowTitle("狸猫猫表单")
@@ -237,7 +307,7 @@ class MainWindow(QMainWindow):
         pdf_path = self.template_manager.get_pdf_path(template.id)
         self.design_mode.load_template(template, pdf_path)
         self.center_stack.setCurrentIndex(self.MODE_DESIGN)
-        self.left_panel.show()
+        self._apply_sidebar()
         self.left_panel.setCurrentIndex(0)
         self.thumbnail_bar.load_pages(template, pdf_path)
         self.thumbnail_bar.set_current_page(0)
@@ -268,7 +338,7 @@ class MainWindow(QMainWindow):
         pdf_path = self.template_manager.get_pdf_path(template.id)
         self.fill_mode.load_template(template, pdf_path, record)
         self.center_stack.setCurrentIndex(self.MODE_FILL)
-        self.left_panel.show()
+        self._apply_sidebar()
         self.left_panel.setCurrentIndex(0)
         self.thumbnail_bar.load_pages(template, pdf_path)
         self.right_panel.show()
@@ -602,7 +672,7 @@ class MainWindow(QMainWindow):
         dialog = PreviewDialog(
             self._current_template, self._current_record, self.template_manager, self
         )
-        dialog.exec()
+        dialog_exec(dialog)
 
     def _on_print(self):
         if not self._current_template or not self._current_record:

@@ -12,6 +12,7 @@ QWidget = QtWidgets.QWidget
 QVBoxLayout = QtWidgets.QVBoxLayout
 QHBoxLayout = QtWidgets.QHBoxLayout
 QFormLayout = QtWidgets.QFormLayout
+QGridLayout = QtWidgets.QGridLayout
 QScrollArea = QtWidgets.QScrollArea
 QLabel = QtWidgets.QLabel
 QLineEdit = QtWidgets.QLineEdit
@@ -64,11 +65,16 @@ class FieldDesignPanel(QWidget):
         layout.addWidget(title)
 
         # 字段列表
+        # 这里刻意不给 stretch：属性区有 10 行表单，才是真正需要高度的地方。
+        # 之前列表和属性区各占 stretch=1，结果列表一大片空白、
+        # 属性区被挤到要滚动才能看到（1280x800 上最后几项都露不出来）。
         self._field_list = QListWidget()
+        self._field_list.setMinimumHeight(90)
+        self._field_list.setMaximumHeight(190)
         self._field_list.currentRowChanged.connect(self._on_field_selected_in_list)
         self._field_list.setDragDropMode(DRAG_INTERNAL_MOVE)
         self._field_list.model().rowsMoved.connect(self._on_fields_reordered)
-        layout.addWidget(self._field_list, stretch=1)
+        layout.addWidget(self._field_list)
 
         self._list_hint = QLabel("还没有字段。在 PDF 上按住鼠标左键拖拽画框")
         self._list_hint.setProperty("role", "hint")
@@ -453,49 +459,51 @@ class FieldFillPanel(QWidget):
         fg.addStretch()
         layout.addWidget(field_group, stretch=1)
 
-        # 上一个 / 下一个
-        nav = QHBoxLayout()
-        nav.setSpacing(6)
+        # 上一个 / 下一个 + 操作按钮：统一用两列网格，保证三行按钮的
+        # 中缝对齐（之前三个 QHBoxLayout 各自分配宽度，中缝分别是
+        # 113|161 / 135|135 / 190|120，看起来是歪的）
+        grid = QGridLayout()
+        grid.setSpacing(6)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+
         self._prev_btn = QPushButton("上一个")
         self._prev_btn.setIcon(icon_of(self, "SP_ArrowUp"))
         self._prev_btn.clicked.connect(self.tab_prev_requested)
-        nav.addWidget(self._prev_btn)
+        grid.addWidget(self._prev_btn, 0, 0)
+
         self._next_btn = QPushButton("下一个 (Tab)")
         apply_role(self._next_btn, "primary")
         self._next_btn.setIcon(icon_of(self, "SP_ArrowDown"))
         self._next_btn.clicked.connect(self.tab_next_requested)
-        nav.addWidget(self._next_btn)
-        layout.addLayout(nav)
+        grid.addWidget(self._next_btn, 0, 1)
 
-        # ── 操作 ──
-        actions = QHBoxLayout()
-        actions.setSpacing(6)
         save_btn = QPushButton("保存草稿")
         save_btn.setIcon(icon_of(self, "SP_DialogSaveButton"))
         save_btn.setToolTip("保存填写进度 (Ctrl+S)")
         save_btn.clicked.connect(self.save_requested)
-        actions.addWidget(save_btn)
+        grid.addWidget(save_btn, 1, 0)
+
         preview_btn = QPushButton("预览")
         preview_btn.setIcon(icon_of(self, "SP_FileDialogContentsView"))
         preview_btn.setToolTip("预览填写后的效果")
         preview_btn.clicked.connect(self.preview_requested)
-        actions.addWidget(preview_btn)
-        layout.addLayout(actions)
+        grid.addWidget(preview_btn, 1, 1)
 
-        actions2 = QHBoxLayout()
-        actions2.setSpacing(6)
         export_btn = QPushButton("导出 PDF")
         apply_role(export_btn, "primary")
         export_btn.setIcon(icon_of(self, "SP_DialogSaveButton"))
         export_btn.setToolTip("把填写内容烧录进 PDF 并保存为新文件")
         export_btn.clicked.connect(self.export_requested)
-        actions2.addWidget(export_btn)
+        grid.addWidget(export_btn, 2, 0)
+
         print_btn = QPushButton("打印")
         print_btn.setIcon(icon_of(self, "SP_ComputerIcon"))
         print_btn.setToolTip("直接打印 (Ctrl+P)")
         print_btn.clicked.connect(self.print_requested)
-        actions2.addWidget(print_btn)
-        layout.addLayout(actions2)
+        grid.addWidget(print_btn, 2, 1)
+
+        layout.addLayout(grid)
 
     # ── 加载 ──────────────────────────────────────
 

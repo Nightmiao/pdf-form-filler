@@ -207,27 +207,35 @@ class FieldItem(QGraphicsObject):
 
             type_color = TYPE_COLORS.get(self._field.field_type, "#1D4ED8")
             painter.setPen(QPen(QColor(30, 30, 30)))
-            font = QFont("Microsoft YaHei", 9)
+            # 标签也要按场景比例换算成像素字号。
+            # 原来用 QFont(..., 9)（点大小）≈ 12 场景单位，只有填写文字的
+            # 一半；1024x768 上视图缩放约 0.4，标签只剩 5px，根本看不清。
+            font = QFont("Microsoft YaHei")
+            label_px = max(12, int(round(10.0 * self._scale)))
+            font.setPixelSize(label_px)
             painter.setFont(font)
             label = self._field.name
+            label_h = label_px + 4
             if self._field.required:
                 label += " *"
                 painter.setPen(QPen(QColor(200, 0, 0)))
             painter.drawText(
-                QRectF(4, 1, max(w - 8, 4), min(h, 18)),
+                QRectF(4, 1, max(w - 8, 4), min(h, label_h)),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                 label,
             )
             # 类型小徽标
-            if h >= 22 and w >= 46:
+            if h >= 24 and w >= 46:
                 badge = f"[{self._field.display_type}]"
                 painter.setPen(QPen(QColor(type_color)))
-                fm = font
-                fm.setPointSize(8)
-                painter.setFont(fm)
+                badge_px = max(10, int(round(8.0 * self._scale)))
+                badge_font = QFont(font)
+                badge_font.setPixelSize(badge_px)
+                painter.setFont(badge_font)
+                badge_h = badge_px + 3
                 painter.drawText(
-                    QRectF(4, min(h, 20) - 2, max(w - 8, 4), max(h - 20, 12)),
-                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom,
+                    QRectF(4, min(h, label_h + badge_h) - badge_h, max(w - 8, 4), badge_h),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                     badge,
                 )
 

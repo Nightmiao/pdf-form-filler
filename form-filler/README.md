@@ -69,13 +69,24 @@
 
 ## 自动化测试
 
-离屏冒烟/回归测试覆盖：建模板 → 画字段 → 页面旋转精确换算 → 撤销/重做 → 排序同步 → 跨页 Tab → 填写/保存 → 烧录校验（含 15° 任意角度与页面矫正角导出）→ 记录切换持久化 → 非法字段防御 → 导出路径防覆盖 → 预览异常保护 → 缩略图异步渲染 → LRU 缓存 → 搜索防抖 → 必填校验，并输出各界面截图：
+离屏自动化测试共四套，两套环境（开发机 PySide6/Qt6 与 Win7 兼容环境
+Python 3.8/3.9 + PySide2/Qt5）都必须全绿：
 
-    venv\Scripts\python.exe tests\smoke_test.py
-    venv\Scripts\python.exe tests\audit_verify.py
+    venv\Scripts\python.exe tests\smoke_test.py         # 全流程冒烟/回归 + 界面截图
+    venv\Scripts\python.exe tests\audit_verify.py       # 旋转几何 / 并发 / 句柄审计
+    venv\Scripts\python.exe tests\print_accuracy.py     # 打印落点精度（需要打印机）
+    venv\Scripts\python.exe tests\ui_layout_check.py    # 1024x768 小屏布局 + Win7 字体安全
 
-两套环境均已验证通过：开发机（PySide6/Qt6）与 Windows 7 兼容环境
-（Python 3.8/3.9 + PySide2/Qt5，可用 build_win7.bat 或离线 wheel 搭建）。
+覆盖点：建模板 → 画字段 → 页面旋转精确换算 → 撤销/重做 → 排序同步 → 跨页 Tab →
+填写/保存 → 烧录校验（含 15° 任意角度与页面矫正角导出）→ 记录切换持久化 →
+非法字段防御 → 导出路径防覆盖 → 预览异常保护 → 缩略图异步渲染 → LRU 缓存 →
+搜索防抖 → 必填校验 → **打印落点误差 < 0.4mm** → **1024x768 下关键按钮不被溢出菜单吞掉**。
+
+> **tests/print_accuracy.py 为什么重要**：早期版本把 `QPrinter.pageRect()` 的
+> 页边距当成画笔偏移量叠加，导致整页内容向右下平移一个页边距（A4 实测 3.5mm），
+> 右下角还会被裁掉。旧用例只检查"页面上有没有暗像素"，位移 10pt 也能通过，
+> 所以这个缺陷躲过了好几轮回归。新用例用两个已知位置的基准方块反算实际落点，
+> 误差超过 0.42mm 直接失败。
 
 ## 打包为 EXE（Windows）
 
@@ -96,15 +107,36 @@
 - Win7 系统要求：SP1 + VC++ 2015-2019 运行库（精简版系统另需 KB2533623 / KB2999226 补丁），
   详见文档的常见问题清单。
 
+### 打印出问题时怎么办：内置自检
+
+程序带一个自检模式，会把运行环境、字体、打印机列表和**打印坐标**写成一份报告：
+
+    狸猫猫表单.exe --diagnose        （命令行）
+    或在快捷方式的目标后面加 --diagnose
+
+报告写到桌面：**狸猫猫表单-自检报告.txt**。打印不正常时把这份文件发给开发者即可定位。
+
+### Win7 上的界面适配
+
+- **DPI 感知**：程序启动时声明 DPI 感知，125% 缩放下界面不会被系统拉伸模糊、
+  右侧面板也不会跑到屏幕外；
+- **小屏自适应**：窗口按屏幕可用区域决定初始大小；低于 1180px 宽时左侧缩略图栏
+  自动收起（状态栏右下角「显示缩略图」或 Ctrl+B 可随时开关），
+  保证「保存」「去填写」「调整设计」这些关键按钮在 1024x768 上也直接可见、不进溢出菜单；
+- **不依赖 emoji 字体**：Win7 没有彩色 emoji（Segoe UI Emoji 从 Win8 才有），
+  界面上所有图标都用 QPainter 自绘或 Qt 内置标准图标，不会出现空心方框。
+
 ## 项目结构
 
     form-filler/
-    ├── main.py                    # 程序入口（应用主题/字体/启动）
+    ├── main.py                    # 程序入口（DPI 感知/主题/窗口尺寸/--diagnose）
     ├── requirements.txt
     ├── app/
+    │   ├── qt.py                  # Qt5/Qt6 兼容层（唯一允许碰 PySide 的地方）
+    │   ├── version.py             # 版本号与构建日期
     │   ├── ui/                    # 界面层
-    │   │   ├── main_window.py     # 主窗口（模式切换/记录管理/必填校验）
-    │   │   ├── home_page.py       # 首页模板库（卡片墙/搜索/空状态）
+    │   │   ├── main_window.py     # 主窗口（模式切换/记录管理/必填校验/窄屏自适应）
+    │   │   ├── home_page.py       # 首页模板库（卡片墙/搜索/空状态/自检入口）
     │   │   ├── design_mode.py     # 设计模式（两级工具栏）
     │   │   ├── fill_mode.py       # 填写模式
     │   │   ├── pdf_canvas.py      # PDF 画布（渲染/交互/撤销重做/旋转换算）
@@ -113,18 +145,22 @@
     │   │   ├── thumbnail_bar.py   # 缩略图导航
     │   │   ├── alignment_overlay.py  # 网格吸附与对齐线
     │   │   ├── preview_dialog.py  # 预览弹窗（可导出/打印）
-    │   │   ├── print_helper.py    # 打印（自适应纸张）
+    │   │   ├── print_helper.py    # 打印（坐标换算见文件头注释）
     │   │   ├── onboarding.py      # 3 步新手引导
-    │   │   └── theme.py           # 全局浅色主题与样式表
+    │   │   └── theme.py           # 全局样式表 + 自绘图标 + 省略号标签
     │   └── core/                  # 核心层
     │       ├── pdf_engine.py      # PDF 渲染/烧录/旋转几何
     │       ├── template_manager.py
     │       ├── record_manager.py  # 多份填写记录管理
     │       ├── field_model.py     # 数据模型
     │       ├── export_import.py   # .lmt 导入导出
+    │       ├── diagnostics.py     # 运行自检（环境/字体/打印机/打印落点）
     │       └── settings.py        # 应用设置
     └── tests/
-        └── smoke_test.py          # 离屏自动化冒烟测试
+        ├── smoke_test.py          # 全流程冒烟 + 界面截图
+        ├── audit_verify.py        # 旋转几何/并发/句柄审计
+        ├── print_accuracy.py      # 打印落点精度（真实打印管线）
+        └── ui_layout_check.py     # 小屏布局 + Win7 字体安全
 
 ## 技术栈
 

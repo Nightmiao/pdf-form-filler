@@ -16,7 +16,7 @@ QCheckBox = QtWidgets.QCheckBox
 Signal = QtCore.Signal
 
 from app.ui.pdf_canvas import PdfCanvas
-from app.ui.theme import apply_role, icon_of, COLORS
+from app.ui.theme import apply_role, icon_of, COLORS, make_elided_label
 from app.core.field_model import TemplateMeta, FieldDefinition
 
 
@@ -53,8 +53,10 @@ class DesignMode(QWidget):
 
         main_bar.addSeparator()
 
-        self._title_label = QLabel("未命名模板")
+        self._title_label = make_elided_label("未命名模板")
         self._title_label.setStyleSheet(f"font-weight: 700; font-size: 14px; color: {COLORS['text']};")
+        self._title_label.setMinimumWidth(80)
+        self._title_label.setMaximumWidth(200)
         main_bar.addWidget(self._title_label)
 
         # 弹性空间
@@ -62,25 +64,6 @@ class DesignMode(QWidget):
         stretch = QtWidgets.QWidget()
         stretch.setSizePolicy(size_policy("Expanding"), size_policy("Preferred"))
         main_bar.addWidget(stretch)
-
-        # 撤销 / 重做
-        self._undo_btn = QPushButton("撤销")
-        self._undo_btn.setIcon(icon_of(self, "SP_ArrowBack"))
-        apply_role(self._undo_btn, "toolbar")
-        self._undo_btn.setToolTip("撤销 (Ctrl+Z)")
-        self._undo_btn.clicked.connect(self.undo)
-        self._undo_btn.setEnabled(False)
-        main_bar.addWidget(self._undo_btn)
-
-        self._redo_btn = QPushButton("重做")
-        self._redo_btn.setIcon(icon_of(self, "SP_ArrowForward"))
-        apply_role(self._redo_btn, "toolbar")
-        self._redo_btn.setToolTip("重做 (Ctrl+Y)")
-        self._redo_btn.clicked.connect(self.redo)
-        self._redo_btn.setEnabled(False)
-        main_bar.addWidget(self._redo_btn)
-
-        main_bar.addSeparator()
 
         # 页码
         main_bar.addWidget(QLabel("页码"))
@@ -98,6 +81,9 @@ class DesignMode(QWidget):
 
         main_bar.addSeparator()
 
+        # 主操作放最右：Qt 的工具栏溢出是从右往左丢控件的，
+        # 把「保存」「去填写」放这里意味着窗口够宽时它们一定在；
+        # 不够宽时会被丢——所以撤销/重做/页码都移走了，见下。
         self._save_btn = QPushButton("保存")
         self._save_btn.setIcon(icon_of(self, "SP_DialogSaveButton"))
         self._save_btn.setToolTip("保存模板 (Ctrl+S)")
@@ -118,7 +104,29 @@ class DesignMode(QWidget):
         tools_bar.setMovable(False)
         tools_bar.setStyleSheet("QToolBar { background: #FAFBFC; }")  # 次级工具栏稍浅底
 
-        snap_btn = QCheckBox("网格吸附")
+        # 撤销 / 重做（编辑辅助，放第二行；即使被溢出也不影响主流程）
+        # 只显示图标以压缩宽度：第二行控件多，1024 宽时容易把右侧缩放控件挤掉
+        self._undo_btn = QPushButton("")
+        self._undo_btn.setIcon(icon_of(self, "SP_ArrowBack"))
+        apply_role(self._undo_btn, "toolbar")
+        self._undo_btn.setFixedWidth(30)
+        self._undo_btn.setToolTip("撤销 (Ctrl+Z)")
+        self._undo_btn.clicked.connect(self.undo)
+        self._undo_btn.setEnabled(False)
+        tools_bar.addWidget(self._undo_btn)
+
+        self._redo_btn = QPushButton("")
+        self._redo_btn.setIcon(icon_of(self, "SP_ArrowForward"))
+        apply_role(self._redo_btn, "toolbar")
+        self._redo_btn.setFixedWidth(30)
+        self._redo_btn.setToolTip("重做 (Ctrl+Y)")
+        self._redo_btn.clicked.connect(self.redo)
+        self._redo_btn.setEnabled(False)
+        tools_bar.addWidget(self._redo_btn)
+
+        tools_bar.addSeparator()
+
+        snap_btn = QCheckBox("吸附")
         snap_btn.setChecked(True)
         snap_btn.setToolTip("拖动字段时自动对齐网格")
         tools_bar.addWidget(snap_btn)
@@ -130,17 +138,19 @@ class DesignMode(QWidget):
 
         tools_bar.addSeparator()
 
-        tools_bar.addWidget(QLabel("页面旋转矫正"))
+        rot_label = QLabel("旋转")
+        rot_label.setToolTip("页面旋转矫正：给扫描歪斜的表格掰正（-5° ~ +5°）")
+        tools_bar.addWidget(rot_label)
         self._rotation_slider = QSlider(Qt.Orientation.Horizontal)
         self._rotation_slider.setRange(-50, 50)
         self._rotation_slider.setValue(0)
-        self._rotation_slider.setFixedWidth(110)
+        self._rotation_slider.setFixedWidth(90)
         self._rotation_slider.setToolTip("给扫描歪斜的表格掰正（-5° ~ +5°）")
         self._rotation_slider.valueChanged.connect(self._on_page_rotation_changed)
         tools_bar.addWidget(self._rotation_slider)
 
         self._rotation_value_label = QLabel("0.0°")
-        self._rotation_value_label.setFixedWidth(42)
+        self._rotation_value_label.setFixedWidth(40)
         self._rotation_value_label.setStyleSheet(f"color:{COLORS['text_secondary']}; font-weight:600;")
         tools_bar.addWidget(self._rotation_value_label)
 
@@ -153,7 +163,7 @@ class DesignMode(QWidget):
         tools_bar.addSeparator()
 
         # 缩放（放在第二行，主栏只保留核心操作，默认窗口下不再溢出折叠）
-        self._zoom_out_btn = QPushButton("−")
+        self._zoom_out_btn = QPushButton("-")
         apply_role(self._zoom_out_btn, "toolbar")
         self._zoom_out_btn.setFixedWidth(30)
         self._zoom_out_btn.setToolTip("缩小 (Ctrl+-)")
@@ -161,19 +171,19 @@ class DesignMode(QWidget):
         tools_bar.addWidget(self._zoom_out_btn)
 
         self._zoom_label = QLabel("100%")
-        self._zoom_label.setFixedWidth(46)
+        self._zoom_label.setFixedWidth(40)
         self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._zoom_label.setStyleSheet(f"color:{COLORS['text_secondary']}; font-weight:600;")
         tools_bar.addWidget(self._zoom_label)
 
-        self._zoom_in_btn = QPushButton("＋")
+        self._zoom_in_btn = QPushButton("+")
         apply_role(self._zoom_in_btn, "toolbar")
         self._zoom_in_btn.setFixedWidth(30)
         self._zoom_in_btn.setToolTip("放大 (Ctrl++)")
         self._zoom_in_btn.clicked.connect(self._on_zoom_in)
         tools_bar.addWidget(self._zoom_in_btn)
 
-        self._fit_btn = QPushButton("适应窗口")
+        self._fit_btn = QPushButton("适应")
         apply_role(self._fit_btn, "toolbar")
         self._fit_btn.setToolTip("适应窗口 (Ctrl+0)")
         self._fit_btn.clicked.connect(self._on_zoom_fit)

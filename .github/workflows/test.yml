@@ -23,6 +23,8 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python tests/smoke_test.py
       - run: python tests/audit_verify.py
+      - run: python tests/print_accuracy.py
+      - run: python tests/ui_layout_check.py
 
   test-qt5-win7-compat:
     name: PySide2 (Qt5) / Python 3.9 — Windows 7 兼容分支
@@ -38,3 +40,5 @@ jobs:
       - run: pip install -r requirements-win7.txt PyMuPDFb==1.23.22
       - run: python tests/smoke_test.py
       - run: python tests/audit_verify.py
+      - run: python tests/print_accuracy.py
+      - run: python tests/ui_layout_check.py

@@ -13,23 +13,27 @@ QPushButton = QtWidgets.QPushButton
 QStackedWidget = QtWidgets.QStackedWidget
 QWidget = QtWidgets.QWidget
 
-from app.ui.theme import apply_role
+from app.ui.theme import apply_role, glyph_label, step_glyph
 
 STEPS = [
     {
-        "icon": "📄",
+        "glyph": "document",
         "title": "第 1 步：上传 PDF 表单",
         "text": "点击「新建模板」，选择你要填写的 PDF 表单。\n原始文件会被原样保存，填写和导出都不会改动它。",
     },
     {
-        "icon": "✏️",
+        "glyph": "draw",
         "title": "第 2 步：画出填写框",
-        "text": "进入设计模式后，按住鼠标左键在表格空白处拖拽，画出填写框。\n在右侧设置字段名称、类型（文本/数字/日期/下拉/勾选）和必填。\n拖动框可移动，拖四角小圆点可调整大小。",
+        "text": "进入设计模式后，按住鼠标左键在表格空白处拖拽，画出填写框。\n"
+                "在右侧设置字段名称、类型（文本/数字/日期/下拉/勾选）和必填。\n"
+                "拖动框可移动，拖四角小圆点可调整大小。",
     },
     {
-        "icon": "🚀",
+        "glyph": "print",
         "title": "第 3 步：填写并导出",
-        "text": "点击「去填写」，按 Tab 键依次填写，或直接点 PDF 上的蓝色框。\n可以保存草稿、为不同的人建立多份记录，\n最后预览、导出 PDF 或直接打印。",
+        "text": "点击「去填写」，按 Tab 键依次填写，或直接点 PDF 上的蓝色框。\n"
+                "可以保存草稿、为不同的人建立多份记录，\n"
+                "最后预览、导出 PDF 或直接打印。",
     },
 ]
 
@@ -41,7 +45,9 @@ class OnboardingDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("欢迎使用狸猫猫表单")
         self.setModal(True)
-        self.setFixedSize(520, 400)
+        # 用最小尺寸而非固定尺寸：用户把系统字号/DPI 放大时还能撑开
+        self.setMinimumSize(520, 420)
+        self.resize(560, 460)
         self._current = 0
         self._setup_ui()
 
@@ -63,9 +69,7 @@ class OnboardingDialog(QDialog):
             v.setAlignment(Qt.AlignmentFlag.AlignCenter)
             v.setSpacing(10)
 
-            icon = QLabel(step["icon"])
-            icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            icon.setStyleSheet("font-size: 52px; background: transparent;")
+            icon = glyph_label(step["glyph"], 64)
             v.addWidget(icon)
 
             t = QLabel(step["title"])
@@ -73,11 +77,14 @@ class OnboardingDialog(QDialog):
             t.setStyleSheet("font-size: 15px; font-weight: 700; color: #1F2329;")
             v.addWidget(t)
 
+            # 注意：Qt 样式表不支持 line-height，行距只能靠段落间距控制。
+            # wordWrap 也别开：QLabel 的换行 sizeHint 会算得很窄，
+            # 把已经用 \n 排好版的文案再折一次，读起来很碎。
             body = QLabel(step["text"])
             body.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            body.setWordWrap(True)
-            body.setStyleSheet("color: #4B5563; line-height: 150%;")
-            v.addWidget(body)
+            body.setWordWrap(False)
+            body.setStyleSheet("color: #4B5563;")
+            v.addWidget(body, alignment=Qt.AlignmentFlag.AlignCenter)
             self._stack.addWidget(page)
         layout.addWidget(self._stack, stretch=1)
 
@@ -88,7 +95,7 @@ class OnboardingDialog(QDialog):
         self._dots = []
         for i in range(len(STEPS)):
             dot = QLabel("●")
-            dot.setStyleSheet("color: #D5DAE1; font-size: 12px; background: transparent;")
+            dot.setStyleSheet("color: #B0BAC6; font-size: 12px; background: transparent;")
             dots.addWidget(dot)
             self._dots.append(dot)
         layout.addLayout(dots)
@@ -119,7 +126,7 @@ class OnboardingDialog(QDialog):
             if i == self._current:
                 dot.setStyleSheet("color: #3B82F6; font-size: 12px; background: transparent;")
             else:
-                dot.setStyleSheet("color: #D5DAE1; font-size: 12px; background: transparent;")
+                dot.setStyleSheet("color: #B0BAC6; font-size: 12px; background: transparent;")
         self._prev_btn.setEnabled(self._current > 0)
         last = self._current == len(STEPS) - 1
         self._next_btn.setText("开始使用" if last else "下一步")
