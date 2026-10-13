@@ -16,6 +16,7 @@ import math
 import threading
 import fitz  # PyMuPDF
 from app.qt import QtGui, QtCore
+from app.core.field_model import is_truthy
 
 QPixmap = QtGui.QPixmap
 QSizeF = QtCore.QSizeF
@@ -157,9 +158,10 @@ class PdfSource:
 
 def get_page_count(pdf_path: str) -> int:
     doc = fitz.open(pdf_path)
-    count = doc.page_count
-    doc.close()
-    return count
+    try:
+        return doc.page_count
+    finally:
+        doc.close()
 
 
 # ── 渲染 ───────────────────────────────────────────
@@ -215,26 +217,79 @@ def burn_text(
         output_path = f"{base}_filled{ext}"
 
     doc = fitz.open(pdf_path)
-    page_count = doc.page_count
-    page_settings = page_settings or []
+    try:
+        page_count = doc.page_count
+        page_settings = page_settings or []
 
-    cjk_font = _find_cjk_font()
-    if cjk_font:
-        for page_num in range(page_count):
+        cjk_font = _find_cjk_font()
+        if cjk_font:
+            for page_num in range(page_count):
+                try:
+                    doc[page_num].insert_font(fontfile=cjk_font, fontname="CJKFont")
+                except Exception:
+                    pass
+
+        for field in fields:
             try:
-                doc[page_num].insert_font(fontfile=cjk_font, fontname="CJKFont")
+                _burn_field(doc, field, values, page_settings, cjk_font)
             except Exception:
-                pass
+                continue  # 单个字段失败不影响其余字段
 
-    for field in fields:
-        try:
-            _burn_field(doc, field, values, page_settings, cjk_font)
-        except Exception:
-            continue  # 单个字段失败不影响其余字段
-
-    doc.save(output_path)
-    doc.close()
+        doc.save(output_path)
+    finally:
+        doc.close()
     return output_path
+
+
+def expected_burned_text(field, values: dict) -> str:
+    """该字段"本应被烧录进 PDF"的文字；无内容/不勾选时返回空串。
+
+    与 _burn_field 的取值口径保持一致（含勾选框归一化成 √）。
+    """
+    field_id = getattr(field, "id", None)
+    value = values.get(field_id, getattr(field, "default_value", "")) if field_id else ""
+    if not value:
+        return ""
+    if getattr(field, "field_type", "text") == "checkbox":
+        return "√" if is_truthy(value) else ""
+    return str(value)
+
+
+def missing_burned_fields(output_path: str, fields: list, values: dict) -> list:
+    """校验导出结果：返回"有内容却没写进 PDF"的字段名列表。
+
+    为什么需要它：打印路径一直有"有值却提取不到文字"的自检，导出路径却**无条件**
+    弹"导出成功"；而 burn_text 对于越界页码、退化矩形、字体写入失败等情况是
+    `except: continue` 静默跳过的。于是一份缺了字段的表单会以"成功"的面目交到
+    用户手里 —— 对一个要拿去报账的工具来说，这是最不该静默的一类失败。
+    """
+    names = []
+    try:
+        doc = fitz.open(output_path)
+    except Exception:
+        return [getattr(f, "name", "?") for f in fields]
+    try:
+        page_text = {}
+        for i in range(doc.page_count):
+            try:
+                page_text[i] = "".join(doc[i].get_text().split())
+            except Exception:
+                page_text[i] = ""
+        for field in fields:
+            want = expected_burned_text(field, values)
+            if not want:
+                continue
+            name = getattr(field, "name", "?")
+            page_num = int(getattr(field, "page", 0) or 0)
+            if not (0 <= page_num < doc.page_count):
+                names.append(name)
+                continue
+            needle = "".join(want.split())
+            if needle and needle not in page_text.get(page_num, ""):
+                names.append(name)
+    finally:
+        doc.close()
+    return names
 
 
 def _burn_field(doc, field, values, page_settings, cjk_font):
@@ -258,7 +313,7 @@ def _burn_field(doc, field, values, page_settings, cjk_font):
         return
 
     if getattr(field, "field_type", "text") == "checkbox":
-        checked = value.lower() in ("true", "yes", "✓", "√", "是", "1", "on")
+        checked = is_truthy(value)
         if not checked:
             return
         value = "√"

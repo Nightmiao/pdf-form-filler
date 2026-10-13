@@ -16,6 +16,28 @@ FIELD_TYPES = ("text", "number", "date", "select", "checkbox")
 Alignment = Literal["left", "center", "right"]
 ALIGNMENTS = ("left", "center", "right")
 
+# 勾选框"算不算已勾选"的统一口径。
+# 历史缺陷：这个集合在 6 处各写了一份，且彼此不一致 —— 导出(pdf_engine)与
+# 画布显示(field_item)认 "on"，而必填校验(main_window)、填写进度与控件同步
+# (field_panel) 不认。结果是同一份数据在"导出时算填了、校验时算没填"，
+# 行为随入口而变。现在只保留这一个定义。
+TRUTHY_VALUES = frozenset(
+    {"true", "1", "yes", "on", "y", "t", "√", "✓", "是", "已勾选"}
+)
+
+
+def is_truthy(value) -> bool:
+    """勾选框的值是否代表"已勾选"（大小写不敏感、忽略首尾空白）"""
+    return str(value or "").strip().lower() in TRUTHY_VALUES
+
+
+# 字号允许区间 —— 数据层与界面控件共用同一份定义。
+# 历史缺陷：from_dict 限幅 4~200，而设计面板的 QDoubleSpinBox 是 6~72，
+# 于是载入一个字号 100 的模板后，只要改任意一个属性，_apply_properties
+# 就会把字号静默夹到 72。
+MIN_FONT_SIZE = 4.0
+MAX_FONT_SIZE = 200.0
+
 
 def _finite(v) -> bool:
     try:
@@ -149,7 +171,7 @@ class FieldDefinition:
         font_size = data.get("font_size", 12.0)
         if not _finite(font_size):
             font_size = 12.0
-        font_size = max(4.0, min(200.0, float(font_size)))
+        font_size = max(MIN_FONT_SIZE, min(MAX_FONT_SIZE, float(font_size)))
 
         rotation = data.get("rotation", 0.0)
         if not _finite(rotation):

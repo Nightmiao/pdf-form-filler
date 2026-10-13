@@ -21,7 +21,9 @@ class AlignmentOverlay:
     def __init__(self):
         self._snap_enabled: bool = True
         self._alignment_enabled: bool = True
-        self._guide_lines: list[QLineF] = []
+        # 注：这里原先还留了一份 _guide_lines 状态，但从来没有人读它
+        # （画布自己用 _guide_items 管理对齐线图元），属于"写而不读"的
+        # 幽灵状态，已删除以免后人误以为它是数据源。
 
     @property
     def snap_enabled(self) -> bool:
@@ -104,12 +106,7 @@ class AlignmentOverlay:
             if abs(my_c - oy_c) < self.SNAP_THRESHOLD:
                 lines.append(QLineF(QPointF(min(mx0, ox0), oy_c), QPointF(max(mx1, ox1), oy_c)))
 
-        self._guide_lines = lines
         return lines
-
-    @property
-    def guide_lines(self) -> list[QLineF]:
-        return self._guide_lines
 
     @staticmethod
     def guide_line_pen() -> QPen:

@@ -34,7 +34,7 @@ from app.ui.theme import apply_role
 from app.core.template_manager import TemplateManager
 from app.core.record_manager import RecordManager
 from app.core.settings import load_settings, save_settings
-from app.core.field_model import TemplateMeta, FillRecord
+from app.core.field_model import TemplateMeta, FillRecord, is_truthy
 
 
 class MainWindow(QMainWindow):
@@ -639,7 +639,7 @@ class MainWindow(QMainWindow):
                     continue
                 v = values.get(f.id, f.default_value or "")
                 if f.field_type == "checkbox":
-                    filled = v.lower() in ("true", "1", "yes", "√", "✓", "是")
+                    filled = is_truthy(v)
                 else:
                     filled = bool(v and str(v).strip())
                 if not filled:
@@ -736,7 +736,7 @@ class MainWindow(QMainWindow):
         self._flush_record()
         filepath = self._choose_export_path()
         if filepath:
-            from app.core.pdf_engine import burn_text
+            from app.core.pdf_engine import burn_text, missing_burned_fields
             pdf_path = self.template_manager.get_pdf_path(self._current_template.id)
             try:
                 burn_text(
@@ -746,9 +746,22 @@ class MainWindow(QMainWindow):
                     self._current_template.page_settings,
                     filepath,
                 )
+                # 导出完整性校验：写不进去的字段必须说出来，不能只弹"导出成功"
+                missing = missing_burned_fields(
+                    filepath, self._current_template.fields, self._current_record.values
+                )
                 self._set_status(f"PDF 已导出 - {filepath}")
                 self._settings["last_export_dir"] = os.path.dirname(filepath)
                 save_settings(self.data_dir, self._settings)
+                if missing:
+                    QMessageBox.warning(
+                        self, "导出完成，但有字段没写进去",
+                        "以下字段有内容，但没能写进导出的 PDF：\n\n"
+                        + "、".join(missing[:8])
+                        + ("…" if len(missing) > 8 else "")
+                        + "\n\n请检查这些字段的位置/大小是否有效，"
+                          "或先用「预览」确认内容。",
+                    )
                 self._notify_export_done(filepath)
             except Exception as e:
                 QMessageBox.critical(self, "导出失败", str(e))
@@ -791,12 +804,24 @@ class MainWindow(QMainWindow):
         self._status_label.setText(message)
 
     def closeEvent(self, event):
-        # 退出前自动保存，避免丢数据
+        # 退出前自动保存，避免丢数据。
+        # 历史缺陷：这里 except Exception: pass —— 保存失败（磁盘满、目录被删、
+        # 权限不足）时用户直接退出，以为已经存好，实际全丢了。现在明确告知并
+        # 给一次取消退出的机会。
         try:
             if self.center_stack.currentIndex() == self.MODE_DESIGN and self._current_template:
                 self._save_template()
             if self.center_stack.currentIndex() == self.MODE_FILL:
                 self._save_current_record()
-        except Exception:
-            pass
+        except Exception as e:
+            reply = QMessageBox.critical(
+                self, "保存失败，仍要退出吗？",
+                f"退出前自动保存草稿时出错，最近一次的修改可能丢失。\n\n"
+                f"{type(e).__name__}: {e}\n\n"
+                "建议先复制一份数据目录再退出。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
         event.accept()

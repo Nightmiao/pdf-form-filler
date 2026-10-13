@@ -6,6 +6,8 @@ from __future__ import annotations
 import os
 import json
 
+from app.core.storage import atomic_write_json
+
 DEFAULT_SETTINGS = {
     "onboarding_done": False,
 }
@@ -31,6 +33,5 @@ def load_settings(data_dir: str) -> dict:
 
 
 def save_settings(data_dir: str, settings: dict):
-    """保存设置"""
-    with open(_path(data_dir), "w", encoding="utf-8") as f:
-        json.dump(settings, f, ensure_ascii=False, indent=2)
+    """保存设置（原子写）"""
+    atomic_write_json(_path(data_dir), settings)

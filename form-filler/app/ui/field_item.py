@@ -27,7 +27,7 @@ QColor = QtGui.QColor
 QBrush = QtGui.QBrush
 QFont = QtGui.QFont
 
-from app.core.field_model import FieldDefinition
+from app.core.field_model import FieldDefinition, is_truthy
 from app.ui.theme import COLORS
 
 HANDLE_SIZE = 8
@@ -189,11 +189,7 @@ class FieldItem(QGraphicsObject):
             display_value = self._fill_value
             if self._field.field_type == "checkbox":
                 # 勾选框在画布上显示 √ / 留空，与导出结果一致（不显示 true/false）
-                display_value = (
-                    "√"
-                    if str(display_value).lower() in ("true", "1", "yes", "√", "✓", "是", "on")
-                    else ""
-                )
+                display_value = "√" if is_truthy(display_value) else ""
             if display_value:
                 painter.drawText(
                     QRectF(3, 2, max(w - 6, 4), max(h - 4, 4)),

@@ -23,6 +23,7 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python tests/smoke_test.py
       - run: python tests/audit_verify.py
+      - run: python tests/regression_v106.py
       - run: python tests/print_accuracy.py
       - run: python tests/ui_layout_check.py
 
@@ -40,5 +41,6 @@ jobs:
       - run: pip install -r requirements-win7.txt PyMuPDFb==1.23.22
       - run: python tests/smoke_test.py
       - run: python tests/audit_verify.py
+      - run: python tests/regression_v106.py
       - run: python tests/print_accuracy.py
       - run: python tests/ui_layout_check.py

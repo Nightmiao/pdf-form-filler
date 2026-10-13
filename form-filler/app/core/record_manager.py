@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Optional
 
 from app.core.field_model import FillRecord
+from app.core.storage import safe_id, atomic_write_json
 
 
 class RecordManager:
@@ -23,15 +24,16 @@ class RecordManager:
         os.makedirs(path, exist_ok=True)
 
     def _record_dir(self, template_id: str) -> str:
-        d = os.path.join(self.records_dir, template_id)
+        # id 会被拼进路径（save/delete 会写、删文件），只接受安全字符
+        d = os.path.join(self.records_dir, safe_id(template_id))
         self._ensure_dir(d)
         return d
 
     def _json_path(self, template_id: str, record_id: str) -> str:
-        return os.path.join(self._record_dir(template_id), f"{record_id}.json")
+        return os.path.join(self._record_dir(template_id), f"{safe_id(record_id)}.json")
 
     def _pdf_path(self, template_id: str, record_id: str) -> str:
-        return os.path.join(self._record_dir(template_id), f"{record_id}.pdf")
+        return os.path.join(self._record_dir(template_id), f"{safe_id(record_id)}.pdf")
 
     # ── 记录操作 ──────────────────────────────────
 
@@ -44,7 +46,7 @@ class RecordManager:
         return record
 
     def save(self, record: FillRecord):
-        """保存填写记录"""
+        """保存填写记录（原子写，避免半截 JSON 导致记录"消失"）"""
         record.updated_at = datetime.now().isoformat()
         data = {
             "id": record.id,
@@ -55,23 +57,27 @@ class RecordManager:
             "updated_at": record.updated_at,
         }
         path = self._json_path(record.template_id, record.id)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        atomic_write_json(path, data)
 
     def get(self, template_id: str, record_id: str) -> Optional[FillRecord]:
         """获取填写记录"""
-        path = self._json_path(template_id, record_id)
+        try:
+            path = self._json_path(template_id, record_id)
+        except ValueError:
+            return None
         if not os.path.exists(path):
             return None
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        except (json.JSONDecodeError, IOError):
+        except (json.JSONDecodeError, IOError, OSError):
             return None
 
         record = FillRecord()
-        record.id = data.get("id", record.id)
-        record.template_id = data.get("template_id", template_id)
+        # id / template_id 一律以**调用方传入的（来自文件名或 UI 的）值**为准，
+        # 不信任 JSON 里的同名字段：它们会被拼进后续的文件路径。
+        record.id = record_id
+        record.template_id = template_id
         record.name = data.get("name", "")
         record.values = data.get("values", {})
         record.created_at = data.get("created_at", "")
@@ -81,7 +87,10 @@ class RecordManager:
     def list_for_template(self, template_id: str) -> list[FillRecord]:
         """列出某个模板的所有填写记录"""
         records = []
-        rec_dir = self._record_dir(template_id)
+        try:
+            rec_dir = self._record_dir(template_id)
+        except ValueError:
+            return records
         if not os.path.exists(rec_dir):
             return records
         for filename in os.listdir(rec_dir):
@@ -115,8 +124,11 @@ class RecordManager:
 
     def delete(self, template_id: str, record_id: str):
         """删除填写记录"""
-        json_path = self._json_path(template_id, record_id)
-        pdf_path = self._pdf_path(template_id, record_id)
+        try:
+            json_path = self._json_path(template_id, record_id)
+            pdf_path = self._pdf_path(template_id, record_id)
+        except ValueError:
+            return
         if os.path.exists(json_path):
             os.remove(json_path)
         if os.path.exists(pdf_path):
@@ -124,7 +136,10 @@ class RecordManager:
 
     def get_filled_pdf_path(self, template_id: str, record_id: str) -> str:
         """获取已导出 PDF 的路径（如果存在）"""
-        path = self._pdf_path(template_id, record_id)
+        try:
+            path = self._pdf_path(template_id, record_id)
+        except ValueError:
+            return ""
         if os.path.exists(path):
             return path
         return ""

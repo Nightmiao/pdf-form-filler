@@ -679,8 +679,15 @@ class PdfCanvas(QGraphicsView):
         }
 
     def _fields_equal(self, a: dict, b: dict) -> bool:
-        fa = {f.id: (f.rect, f.rotation) for f in a["fields"]}
-        fb = {f.id: (f.rect, f.rotation) for f in b["fields"]}
+        """两个快照是否等价。
+
+        历史缺陷：只比较 rect + rotation。若一次交互/属性编辑只改了别的属性
+        （名称、字号、必填、下拉选项、默认值……），会被判定为"没有变化"而被
+        丢弃 —— 撤销栈里缺一条，用户按 Ctrl+Z 撤不回上一次修改。
+        改为比较字段的全部序列化属性（id 顺序无关）。
+        """
+        fa = {f.id: f.to_dict() for f in a["fields"]}
+        fb = {f.id: f.to_dict() for f in b["fields"]}
         return fa == fb
 
     def push_undo(self):

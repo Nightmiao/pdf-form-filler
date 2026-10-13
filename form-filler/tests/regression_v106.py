@@ -603,6 +603,190 @@ if os.path.exists(out_lmt):
 check("P0-3 导出的 .lmt 含全部 3 个字段", n_fields == 3,
       f"实测 {n_fields} 个（旧实现为 0 个）")
 
+print("=" * 68)
+print("P2-1 存储层：非法 id 无法穿越目录")
+print("=" * 68)
+from app.core.storage import safe_id, is_safe_id, UnsafeIdError, atomic_write_text
+from app.core.field_model import is_truthy, MIN_FONT_SIZE, MAX_FONT_SIZE
+
+rejected = False
+try:
+    safe_id("../../evil")
+except UnsafeIdError:
+    rejected = True
+check("P2-1 safe_id 拒绝 ../ 路径", rejected and not is_safe_id("../x") and is_safe_id("abc123"))
+
+w.close()
+data = new_data_dir()
+pdf = make_pdf(os.path.join(data, "z.pdf"), 1)
+w = MainWindow(data)
+w.resize(1280, 800)
+w.show()
+t = w.template_manager.create("消毒", pdf)
+rec = w.record_manager.create(t.id, "r")
+w.record_manager.save(rec)
+ok_del = True
+try:
+    w.record_manager.delete(t.id, "../../evil")
+except Exception:
+    ok_del = False
+check("P2-1 用穿越 id 删除记录被安全拒绝（不抛异常、不误删）", ok_del)
+check("P2-1 正常记录仍在", len(w.record_manager.list_for_template(t.id)) == 1)
+
+
+print("=" * 68)
+print("P2-2 存储层：原子写（写入失败不会留下半截 JSON）")
+print("=" * 68)
+import app.core.storage as storage
+
+apath = os.path.join(data, "atomic.json")
+atomic_write_text(apath, '{"ok": 1}')
+check("P2-2 正常写入内容正确",
+      json.load(open(apath, encoding="utf-8"))["ok"] == 1)
+real_replace = storage.os.replace
+storage.os.replace = lambda *a, **k: (_ for _ in ()).throw(OSError("simulated"))
+try:
+    try:
+        atomic_write_text(apath, '{"ok": 2}')
+    except OSError:
+        pass
+finally:
+    storage.os.replace = real_replace
+check("P2-2 写入失败后旧文件依然完整可读",
+      json.load(open(apath, encoding="utf-8"))["ok"] == 1)
+leftover = [f for f in os.listdir(data) if f.startswith(".tmp-")]
+check("P2-2 失败后没有残留临时文件", not leftover, f"残留={leftover}")
+
+
+print("=" * 68)
+print("P2-3 勾选框真值口径统一（'on' 不再只被部分模块认可）")
+print("=" * 68)
+truthy_inputs = ["true", "True", "1", "yes", "on", "  ON  ", "√", "✓", "是"]
+check("P2-3 全部历史写法都被认可",
+      all(is_truthy(v) for v in truthy_inputs),
+      f"逐项={[is_truthy(v) for v in truthy_inputs]}")
+check("P2-3 空/false/0/no 都不算勾选",
+      not any(is_truthy(v) for v in ("", "false", "0", "no", None)))
+
+
+print("=" * 68)
+print("P2-4 导出完整性校验能发现「没写进去」的字段")
+print("=" * 68)
+from app.core.pdf_engine import burn_text, missing_burned_fields
+good_f = FieldDefinition(name="正常", page=0, rect=(80, 140, 300, 170))
+bad_f = FieldDefinition(name="退化", page=0, rect=(80, 200, 300, 200.4))   # 高 0.4pt
+vals = {good_f.id: "正常内容", bad_f.id: "丢失内容"}
+out_pdf = os.path.join(data, "verify.pdf")
+burn_text(pdf, [good_f, bad_f], vals, [], out_pdf)
+miss = missing_burned_fields(out_pdf, [good_f, bad_f], vals)
+check("P2-4 正常字段不被误报", "正常" not in miss, f"missing={miss}")
+check("P2-4 被静默跳过的字段被检出", "退化" in miss, f"missing={miss}")
+
+
+print("=" * 68)
+print("P2-5 字号范围与数据层一致（不再静默夹到 72）")
+print("=" * 68)
+w.close()
+data = new_data_dir()
+pdf = make_pdf(os.path.join(data, "f.pdf"), 1)
+w = MainWindow(data)
+w.resize(1280, 800)
+w.show()
+t = w.template_manager.create("字号", pdf)
+big = FieldDefinition(name="大字号", page=0, rect=(80, 140, 400, 200), font_size=150.0, tab_order=0)
+t.fields = [big]
+w.template_manager.update(t)
+w._enter_design_mode(t)
+pump(150)
+panel = w.field_design_panel
+panel.select_field(big.id)
+pump(100)
+check("P2-5 面板字号范围 = 数据层范围",
+      panel._font_size_spin.minimum() == MIN_FONT_SIZE
+      and panel._font_size_spin.maximum() == MAX_FONT_SIZE,
+      f"{panel._font_size_spin.minimum()}~{panel._font_size_spin.maximum()}")
+check("P2-5 载入 150pt 字段后面板显示 150（旧实现被夹到 72）",
+      abs(panel._font_size_spin.value() - 150.0) < 0.01,
+      f"显示 {panel._font_size_spin.value()}")
+
+
+print("=" * 68)
+print("P2-6 数字字段不再接受字母")
+print("=" * 68)
+w.close()
+data = new_data_dir()
+pdf = make_pdf(os.path.join(data, "n.pdf"), 1)
+w = MainWindow(data)
+w.resize(1280, 800)
+w.show()
+t = w.template_manager.create("数字", pdf)
+num_f = FieldDefinition(name="金额", field_type="number", page=0,
+                        rect=(80, 140, 250, 165), tab_order=0)
+t.fields = [num_f]
+w.template_manager.update(t)
+w._enter_design_mode(t)
+w._on_design_to_fill()
+pump(200)
+w.field_fill_panel.focus_field(num_f.id)
+pump(120)
+nw = w.field_fill_panel._current_widget
+v = nw.validator()
+alpha_state = v.validate("abc", 0)[0] if v else None
+digit_state = v.validate("12.5", 0)[0] if v else None
+check("P2-6 数字框装了校验器", v is not None)
+check("P2-6 字母被拒、数字放行",
+      v is not None
+      and not str(alpha_state).endswith("Acceptable")
+      and str(digit_state).endswith("Acceptable"),
+      f"abc→{alpha_state} 12.5→{digit_state}")
+
+
+print("=" * 68)
+print("P2-7 多行字段的 max_length 生效；checked_by_default 不再是死属性")
+print("=" * 68)
+w.close()
+data = new_data_dir()
+pdf = make_pdf(os.path.join(data, "m2.pdf"), 1)
+w = MainWindow(data)
+w.resize(1280, 800)
+w.show()
+t = w.template_manager.create("多行上限", pdf)
+ml = FieldDefinition(name="备注", page=0, rect=(80, 200, 300, 270), tab_order=0,
+                     multiline=True, max_length=5)
+cb = FieldDefinition(name="同意", field_type="checkbox", page=0,
+                     rect=(80, 300, 100, 320), tab_order=1, checked_by_default=True)
+t.fields = [ml, cb]
+w.template_manager.update(t)
+w._enter_design_mode(t)
+w._on_design_to_fill()
+pump(200)
+w.field_fill_panel.focus_field(ml.id)
+pump(120)
+mw_widget = w.field_fill_panel._current_widget
+mw_widget.setPlainText("0123456789")        # 10 个字，上限 5
+pump(80)
+check("P2-7 多行文本被截断到 max_length", len(mw_widget.toPlainText()) <= 5,
+      f"实测 {len(mw_widget.toPlainText())} 字：{mw_widget.toPlainText()!r}")
+cb_values = w.field_fill_panel._values
+check("P2-7 checked_by_default 让勾选框默认勾上",
+      is_truthy(cb_values.get(cb.id, "")), f"值={cb_values.get(cb.id)!r}")
+
+
+print("=" * 68)
+print("P2-8 撤销快照比较覆盖全部属性（只改名称也进撤销栈）")
+print("=" * 68)
+base = FieldDefinition(name="原名", page=0, rect=(0.0, 0.0, 10.0, 10.0))
+renamed = FieldDefinition(name="改过的名字", page=0, rect=(0.0, 0.0, 10.0, 10.0),
+                          id=base.id)
+snap_a = {"fields": [base], "selected": ""}
+snap_b = {"fields": [renamed], "selected": ""}
+check("P2-8 仅名称变化也判定为「有变化」",
+      not w.design_mode.canvas._fields_equal(snap_a, snap_b))
+snap_c = {"fields": [FieldDefinition(name="原名", page=0, rect=(0.0, 0.0, 10.0, 10.0),
+                                     id=base.id)], "selected": ""}
+check("P2-8 完全相同仍判定为「无变化」",
+      w.design_mode.canvas._fields_equal(snap_a, snap_c))
+
 print()
 print(f"═══ v1.0.6 修复回归：{len(PASS)} 通过 / {len(FAIL)} 失败 ═══")
 for x in FAIL:

@@ -15,6 +15,7 @@ from typing import Optional
 
 from app.core.field_model import TemplateMeta, PageSettings
 from app.core.pdf_engine import get_page_count, render_thumbnail
+from app.core.storage import safe_id, atomic_write_json
 
 
 class TemplateManager:
@@ -31,7 +32,8 @@ class TemplateManager:
         os.makedirs(path, exist_ok=True)
 
     def template_dir(self, template_id: str) -> str:
-        return os.path.join(self.templates_dir, template_id)
+        # id 会被拼进路径；只接受 [A-Za-z0-9_-]，挡掉 ../ 之类的穿越
+        return os.path.join(self.templates_dir, safe_id(template_id))
 
     def json_path(self, template_id: str) -> str:
         return os.path.join(self.template_dir(template_id), "template.json")
@@ -64,7 +66,10 @@ class TemplateManager:
         return meta
 
     def get(self, template_id: str) -> Optional[TemplateMeta]:
-        path = self.json_path(template_id)
+        try:
+            path = self.json_path(template_id)
+        except ValueError:
+            return None
         if not os.path.exists(path):
             return None
         return self._load_meta(path)
@@ -74,7 +79,10 @@ class TemplateManager:
         if not os.path.exists(self.templates_dir):
             return templates
         for dirname in os.listdir(self.templates_dir):
-            path = self.json_path(dirname)
+            try:
+                path = self.json_path(dirname)
+            except ValueError:
+                continue          # 目录名不是合法 id（人为放进去的），跳过
             if os.path.exists(path):
                 meta = self._load_meta(path)
                 if meta:
@@ -87,7 +95,10 @@ class TemplateManager:
         self._save_meta(meta)
 
     def delete(self, template_id: str):
-        template_dir = self.template_dir(template_id)
+        try:
+            template_dir = self.template_dir(template_id)
+        except ValueError:
+            return
         if os.path.exists(template_dir):
             shutil.rmtree(template_dir)
 
@@ -116,16 +127,24 @@ class TemplateManager:
     # ── 内部方法 ──────────────────────────────────
 
     def _save_meta(self, meta: TemplateMeta):
-        with open(self.json_path(meta.id), "w", encoding="utf-8") as f:
-            json.dump(meta.to_dict(), f, ensure_ascii=False, indent=2)
+        # 原子写：避免断电/磁盘满时留下半截 JSON，而 _load_meta 对坏 JSON 是
+        # 静默返回 None —— 那种情况下模板会"凭空消失"，用户完全无从判断。
+        atomic_write_json(self.json_path(meta.id), meta.to_dict())
 
     def _load_meta(self, json_path: str) -> Optional[TemplateMeta]:
         try:
             with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        except (json.JSONDecodeError, IOError):
+        except (json.JSONDecodeError, IOError, OSError):
             return None
         try:
-            return TemplateMeta.from_dict(data)
+            meta = TemplateMeta.from_dict(data)
         except Exception:
             return None
+        # id 一律以**目录名**为准，不信任 JSON 里的 id 字段：
+        # 该字段来自外部文件，可能带 ../ 之类的路径成分，而后续的
+        # pdf_path/thumb_path/delete 都会拿它拼路径。
+        dirname = os.path.basename(os.path.dirname(os.path.abspath(json_path)))
+        if dirname and dirname != meta.id and os.path.basename(json_path) == "template.json":
+            meta.id = dirname
+        return meta
