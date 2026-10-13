@@ -144,28 +144,32 @@ check("D1 画布上有页面位图（非空白）", has_pix and len(cv._scene.it
 print("=" * 68)
 print("D7  渲染失败不再伪造 100x140 页面、不再污染坐标基准")
 print("=" * 68)
-real_render = cv._source.render_page_bytes
+if hasattr(cv, "_page_size_pdf_of") and hasattr(cv, "_failed_pages"):
+    real_render = cv._source.render_page_bytes
 
+    def boom(page_num, dpi):
+        raise RuntimeError("simulated render failure")
 
-def boom(page_num, dpi):
-    raise RuntimeError("simulated render failure")
-
-
-cv._source.render_page_bytes = boom
-try:
-    cv._failed_pages.discard(2)
-    cv._page_pixmaps.pop(2, None)
-    cv._render_page_sync(2)
-finally:
-    cv._source.render_page_bytes = real_render
-sx, sy = cv._page_size_pdf_of(2)
-check("D7 渲染失败后页面尺寸仍是真实 A4（595x842）",
-      abs(sx - 595) < 1.0 and abs(sy - 842) < 1.0, f"实测 {sx:.1f}x{sy:.1f}")
-pm = cv._page_pixmaps.get(2)
-check("D7 占位图按真实页面尺寸生成（不再 100x140）",
-      pm is not None and abs(pm.width() / (150 / 72.0) - 595) < 1.0,
-      f"占位图 {pm.width() if pm else 0}x{pm.height() if pm else 0}px")
-check("D7 失败的页被标记，下次显示会重试", 2 in cv._failed_pages)
+    cv._source.render_page_bytes = boom
+    try:
+        cv._failed_pages.discard(2)
+        cv._page_pixmaps.pop(2, None)
+        cv._render_page_sync(2)
+    finally:
+        cv._source.render_page_bytes = real_render
+    sx, sy = cv._page_size_pdf_of(2)
+    check("D7 渲染失败后页面尺寸仍是真实 A4（595x842）",
+          abs(sx - 595) < 1.0 and abs(sy - 842) < 1.0, f"实测 {sx:.1f}x{sy:.1f}")
+    pm = cv._page_pixmaps.get(2)
+    check("D7 占位图按真实页面尺寸生成（不再 100x140）",
+          pm is not None and abs(pm.width() / (150 / 72.0) - 595) < 1.0,
+          f"占位图 {pm.width() if pm else 0}x{pm.height() if pm else 0}px")
+    check("D7 失败的页被标记，下次显示会重试", 2 in cv._failed_pages)
+else:
+    # 便于复核者把本文件拿到 v1.0.5 基线上跑：旧版本没有这套机制，
+    # 直接引用会中断整个脚本，反而看不到后面还有哪些用例会失败。
+    check("D7 页面尺寸以 PDF 为准 + 失败可重试", False,
+          "旧版本缺少 _page_size_pdf_of/_failed_pages（该缺陷未修复）")
 
 
 print("=" * 68)
@@ -258,9 +262,12 @@ for _ in range(30):                 # 模拟约 1 秒的自动重复
 during = len(cv._undo_stack)
 check("D4 连按 30 次只产生 1 条撤销记录", during - before <= 1,
       f"撤销栈增长 {during - before} 条（旧实现为 30 条）")
-cv._end_nudge()
-after = len(cv._undo_stack)
-check("D4 松手后恰好补 1 条撤销记录", after - before == 1, f"增长 {after - before} 条")
+if hasattr(cv, "_end_nudge"):
+    cv._end_nudge()
+    after = len(cv._undo_stack)
+    check("D4 松手后恰好补 1 条撤销记录", after - before == 1, f"增长 {after - before} 条")
+else:
+    check("D4 松手后恰好补 1 条撤销记录", False, "旧版本没有手势基线机制（_end_nudge）")
 moved = next(x for x in cv._fields if x.id == f.id)
 check("D4 30 次微移累积生效（位移 30pt）", abs(moved.rect[0] - (f.rect[0] + 30.0)) < 1e-6,
       f"x0={moved.rect[0]:.2f}")
@@ -606,8 +613,32 @@ check("P0-3 导出的 .lmt 含全部 3 个字段", n_fields == 3,
 print("=" * 68)
 print("P2-1 存储层：非法 id 无法穿越目录")
 print("=" * 68)
-from app.core.storage import safe_id, is_safe_id, UnsafeIdError, atomic_write_text
-from app.core.field_model import is_truthy, MIN_FONT_SIZE, MAX_FONT_SIZE
+try:
+    from app.core.storage import safe_id, is_safe_id, UnsafeIdError, atomic_write_text
+    from app.core.field_model import is_truthy, MIN_FONT_SIZE, MAX_FONT_SIZE
+except ImportError as _p2_err:
+    # 便于复核者把本文件拿到 v1.0.5 基线上跑：这些模块/常量是 v1.0.6 新增的。
+    # 这里退化成"旧行为"的桩，让下面的 P2 用例**自然失败**，而不是让整个脚本
+    # 在 import 处中断 —— 那样就看不到前面已经失败的用例了。
+    print(f"  [NOTE] 未找到 v1.0.6 新增的模块/常量，使用旧行为桩：{_p2_err}")
+
+    class UnsafeIdError(ValueError):
+        pass
+
+    def safe_id(value):
+        return str(value or "")
+
+    def is_safe_id(value):
+        return True
+
+    def atomic_write_text(path, text, encoding="utf-8"):
+        with open(path, "w", encoding=encoding) as f:   # 旧实现：非原子
+            f.write(text)
+
+    def is_truthy(value):
+        return str(value or "").lower() in ("true", "1", "yes", "√", "✓", "是")
+
+    MIN_FONT_SIZE, MAX_FONT_SIZE = 6.0, 72.0
 
 rejected = False
 try:
