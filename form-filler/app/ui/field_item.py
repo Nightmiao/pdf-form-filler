@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 
+import math
+
 from app.qt import QtWidgets, QtCore, QtGui, Qt, ITEM_SELECTABLE
 
 QGraphicsItem = QtWidgets.QGraphicsItem
@@ -25,10 +27,15 @@ QColor = QtGui.QColor
 QBrush = QtGui.QBrush
 QFont = QtGui.QFont
 
-from app.core.field_model import FieldDefinition
+from app.core.field_model import FieldDefinition, is_truthy
 from app.ui.theme import COLORS
 
 HANDLE_SIZE = 8
+# 手柄命中判定半径（绘制半径 = HANDLE_SIZE/2 = 4px，这里留 3px 容错）。
+# 历史缺陷：判定用的是 ±(HANDLE_SIZE+2)=±10px，即绘制尺寸的 2.5 倍。
+HANDLE_HIT = HANDLE_SIZE / 2 + 3
+# 字段小于该像素尺寸时，四角判定盒会铺满整个身体 → 禁用四角判定，把身体留给"移动"
+HANDLE_BODY_MIN = 2 * HANDLE_HIT + 4
 
 # 各字段类型在画布上的标签颜色
 TYPE_COLORS = {
@@ -182,11 +189,7 @@ class FieldItem(QGraphicsObject):
             display_value = self._fill_value
             if self._field.field_type == "checkbox":
                 # 勾选框在画布上显示 √ / 留空，与导出结果一致（不显示 true/false）
-                display_value = (
-                    "√"
-                    if str(display_value).lower() in ("true", "1", "yes", "√", "✓", "是", "on")
-                    else ""
-                )
+                display_value = "√" if is_truthy(display_value) else ""
             if display_value:
                 painter.drawText(
                     QRectF(3, 2, max(w - 6, 4), max(h - 4, 4)),
@@ -246,14 +249,30 @@ class FieldItem(QGraphicsObject):
     # ── 鼠标交互 ──────────────────────────────────
 
     def _find_handle_at(self, pos: QPointF) -> int | None:
+        """手柄命中测试。
+
+        两条历史缺陷都在这里：
+        1) 判定半径是 ±(HANDLE_SIZE+2)=±10px，而手柄只画了 8px（半径 4px），
+           判定区是绘制区的 2.5 倍，误触严重；
+        2) 判定顺序固定"先四角后身体"，且不区分字段大小 —— 任一方向小于约
+           20px（≈9.6pt）的字段，整个身体被四个角判定盒铺满，永远进不了
+           移动分支，字段再小就彻底拖不动。
+        现在：判定半径收到 ±HANDLE_HIT(7px)；字段过小时跳过四角判定
+        （旋转手柄在框外上方，不受影响）。
+        """
+        w, h = self._pdf_rect_to_pixel()
+        tiny = w < HANDLE_BODY_MIN or h < HANDLE_BODY_MIN
         for htype, handle in self._handles.items():
-            if handle.isVisible():
-                hp = handle.pos()
-                if (
-                    abs(pos.x() - hp.x()) <= HANDLE_SIZE + 2
-                    and abs(pos.y() - hp.y()) <= HANDLE_SIZE + 2
-                ):
-                    return htype
+            if not handle.isVisible():
+                continue
+            if tiny and htype != ResizeHandle.Rotate:
+                continue
+            hp = handle.pos()
+            if (
+                abs(pos.x() - hp.x()) <= HANDLE_HIT
+                and abs(pos.y() - hp.y()) <= HANDLE_HIT
+            ):
+                return htype
         return None
 
     def _is_on_rotate_handle(self, pos: QPointF) -> bool:
@@ -261,8 +280,8 @@ class FieldItem(QGraphicsObject):
         if h and h.isVisible():
             hp = h.pos()
             return (
-                abs(pos.x() - hp.x()) <= HANDLE_SIZE + 2
-                and abs(pos.y() - hp.y()) <= HANDLE_SIZE + 2
+                abs(pos.x() - hp.x()) <= HANDLE_HIT
+                and abs(pos.y() - hp.y()) <= HANDLE_HIT
             )
         return False
 
@@ -333,8 +352,16 @@ class FieldItem(QGraphicsObject):
 
         if self._active_handle is not None and self._handle_start_pos:
             delta = event.scenePos() - self._handle_start_pos
-            dx = delta.x() / self._scale
-            dy = delta.y() / self._scale
+            # 场景轴差量 → 图元"未旋转"坐标系。
+            # 历史缺陷：直接把场景差量当成本地差量加到未旋转的 rect 上，
+            # 于是拖动旋转过的字段时方向与幅度全错 —— 字段旋转 90° 时，
+            # 水平拖"左上"手柄会改变屏幕上的高度。旋转分支用场景量是对的
+            # （角度本来就是场景量），移动分支因平移与旋转无关也是对的，
+            # 只有缩放分支需要这一步反向旋转。
+            ang = math.radians(self._field.rotation)
+            cos_a, sin_a = math.cos(ang), math.sin(ang)
+            dx = (delta.x() * cos_a + delta.y() * sin_a) / self._scale
+            dy = (-delta.x() * sin_a + delta.y() * cos_a) / self._scale
             x0, y0, x1, y1 = self._handle_start_rect
 
             ht = self._active_handle

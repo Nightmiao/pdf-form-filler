@@ -381,12 +381,21 @@ class HomePage(QWidget):
                 card.clicked.connect(self._on_card_clicked)
                 card.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                 card.customContextMenuRequested.connect(
-                    lambda pos, t=tmpl: self._show_context_menu(pos, t)
+                    lambda pos, tid=tmpl.id: self._show_context_menu(pos, tid)
                 )
                 self._cards[tmpl.id] = card
                 self._flow.addWidget(card)
             else:
                 card.refresh(tmpl, thumb_path)
+
+        # 按 _templates 的顺序（list_all 已按 updated_at 倒序）重排卡片。
+        # 历史缺陷：新卡只 append 到末尾、复用卡从不重排，刷新后顺序永远是
+        # "首次出现顺序"，刚编辑过的模板反而排在最后，与"最近更新在前"不符。
+        for tmpl in self._templates:
+            card = self._cards.get(tmpl.id)
+            if card is not None:
+                self._flow.removeWidget(card)
+                self._flow.addWidget(card)
 
         # 移除不在当前结果里的卡片
         stale = [tid for tid in self._cards if tid not in seen]
@@ -425,7 +434,21 @@ class HomePage(QWidget):
     def _on_card_clicked(self, template: TemplateMeta, action: str):
         self.template_selected.emit(template, action)
 
-    def _show_context_menu(self, pos, template: TemplateMeta):
+    def _show_context_menu(self, pos, template_id: str):
+        """右键菜单。
+
+        参数是**模板 id** 而不是 TemplateMeta 对象：卡片上的 lambda 是在建卡那
+        一刻按值捕获当时的对象的，而 card.refresh() 只更新卡片自己的
+        .template，从不重新绑定 lambda。历史缺陷：于是"新建模板 → 设计字段 →
+        返回首页 → 右键导出"导出的永远是首次建卡时的空字段快照（卡片上却
+        显示着"3 个字段"），同事导入后拿到一张没有任何填写框的模板。
+        这里在菜单弹出时按 id 从磁盘重新取一次最新数据。
+        """
+        template = self.template_manager.get(template_id)
+        if template is None:
+            QMessageBox.information(self, "模板不存在", "这个模板可能已被删除，请刷新后重试。")
+            self.refresh()
+            return
         menu = QMenu(self)
         rename_action = menu.addAction("重命名")
         export_action = menu.addAction("导出模板 (.lmt)")
@@ -471,7 +494,15 @@ class HomePage(QWidget):
                     f"模板删除失败：\n{e}\n\n如果正在其他程序里打开这个 PDF，请先关闭。",
                 )
                 return
-            self._cards.pop(template.id, None)
+            # 历史缺陷：只 pop 了缓存字典，没有 removeWidget/deleteLater，
+            # 而 _render_cards 的清理分支只遍历 self._cards 的键（该 id 已被
+            # pop，永远进不了 stale 列表），于是被删除的模板卡片会永久留在
+            # 卡片墙上，点了只会提示"模板不存在"。
+            card = self._cards.pop(template.id, None)
+            if card is not None:
+                self._flow.removeWidget(card)
+                card.setParent(None)
+                card.deleteLater()
             self.template_deleted.emit(template.id)
             self.refresh()
 

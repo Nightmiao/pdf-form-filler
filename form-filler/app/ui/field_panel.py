@@ -32,9 +32,12 @@ QStyle = QtWidgets.QStyle
 Signal = QtCore.Signal
 QDate = QtCore.QDate
 QColor = QtGui.QColor
+QDoubleValidator = QtGui.QDoubleValidator
 
 from app.ui.theme import apply_role, icon_of, COLORS
-from app.core.field_model import FieldDefinition, FillRecord
+from app.core.field_model import (
+    FieldDefinition, FillRecord, is_truthy, MIN_FONT_SIZE, MAX_FONT_SIZE,
+)
 
 DATE_MIN = QDate(1900, 1, 1)
 
@@ -121,7 +124,10 @@ class FieldDesignPanel(QWidget):
         self._props_form.addRow("类型", self._type_combo)
 
         self._font_size_spin = QDoubleSpinBox()
-        self._font_size_spin.setRange(6, 72)
+        # 范围必须与 field_model.from_dict 的限幅一致（4~200）：原先面板是 6~72，
+        # 载入字号 100 的模板后随便改一个属性，_apply_properties 就会把字号
+        # 静默夹到 72，用户看到的是"改个名字把字号改了"。
+        self._font_size_spin.setRange(MIN_FONT_SIZE, MAX_FONT_SIZE)
         self._font_size_spin.setValue(12)
         self._font_size_spin.setSuffix(" pt")
         self._font_size_spin.valueChanged.connect(self._on_prop_changed)
@@ -135,6 +141,13 @@ class FieldDesignPanel(QWidget):
         self._required_check = QCheckBox("此项必须填写")
         self._required_check.toggled.connect(self._on_prop_changed)
         self._props_form.addRow("必填", self._required_check)
+
+        # checked_by_default 原先是个"死属性"：模型和序列化里都有，面板没有控件、
+        # 填写控件也不读它 —— 导出的 .lmt 里带了它却完全不生效。这里补上控件，
+        # 并让填写面板在记录里还没有该字段的值时按它初始化。
+        self._checked_default_check = QCheckBox("新建记录时默认勾选")
+        self._checked_default_check.toggled.connect(self._on_prop_changed)
+        self._props_form.addRow("默认勾选", self._checked_default_check)
 
         self._default_edit = QLineEdit()
         self._default_edit.setPlaceholderText("留空表示无默认内容")
@@ -204,9 +217,30 @@ class FieldDesignPanel(QWidget):
     # ── 内部 ──────────────────────────────────────
 
     def _refresh_field_list(self):
+        """重建字段列表，并把 _current_field 重新解析到当前列表里的同一个对象。
+
+        历史缺陷：这里只按 id 恢复列表高亮，从不更新 _current_field。而
+        快照恢复（撤销/重做）、画布删除字段、切换模板都会换掉字段对象，
+        于是属性面板会继续指向一个"已不在 template.fields 里"的孤儿对象：
+        用户改属性时输入被写进孤儿，MainWindow._on_field_updated 按 id 找不到
+        就静默 return —— 界面有反应、数据不生效，且属性区一直是可用的。
+        """
         selected_id = (
             self._current_field.id if self._current_field is not None else ""
         )
+        current = None
+        if selected_id:
+            current = next((f for f in self._fields if f.id == selected_id), None)
+        self._current_field = current
+        if current is None:
+            self._block_prop_signals(True)
+            self._name_edit.clear()
+            self._block_prop_signals(False)
+            self._props_group.setEnabled(False)
+        else:
+            self._populate_properties(current)
+            self._props_group.setEnabled(True)
+
         self._field_list.blockSignals(True)
         self._field_list.clear()
         for f in sorted(self._fields, key=lambda x: (x.page, x.tab_order, x.name)):
@@ -276,6 +310,7 @@ class FieldDesignPanel(QWidget):
         align_map = {"left": 0, "center": 1, "right": 2}
         self._align_combo.setCurrentIndex(align_map.get(field.alignment, 0))
         self._required_check.setChecked(field.required)
+        self._checked_default_check.setChecked(field.checked_by_default)
         self._default_edit.setText(field.default_value)
         self._max_len_spin.setValue(field.max_length)
         self._multiline_check.setChecked(field.multiline)
@@ -287,7 +322,8 @@ class FieldDesignPanel(QWidget):
     def _block_prop_signals(self, block: bool):
         for w in (
             self._name_edit, self._type_combo, self._font_size_spin,
-            self._align_combo, self._required_check, self._default_edit,
+            self._align_combo, self._required_check, self._checked_default_check,
+            self._default_edit,
             self._max_len_spin, self._multiline_check, self._options_edit,
             self._rotation_spin,
         ):
@@ -309,6 +345,7 @@ class FieldDesignPanel(QWidget):
         align_map = {0: "left", 1: "center", 2: "right"}
         f.alignment = align_map.get(self._align_combo.currentIndex(), "left")
         f.required = self._required_check.isChecked()
+        f.checked_by_default = self._checked_default_check.isChecked()
         f.default_value = self._default_edit.text()
         f.max_length = self._max_len_spin.value()
         f.multiline = self._multiline_check.isChecked()
@@ -508,13 +545,33 @@ class FieldFillPanel(QWidget):
     # ── 加载 ──────────────────────────────────────
 
     def load_fields(self, template, record: FillRecord):
-        """加载字段并定位到当前字段"""
+        """加载字段并定位到当前字段。
+
+        **顺序至关重要（历史缺陷）**：必须先
+          1) 把正在编辑的控件值收回"旧"的 _values（属于旧记录），
+          2) 断开 _current_field_id，
+        然后才能把 _values 换成新记录的数据。
+        原实现先换 _values 再 set_current_field，后者因
+        `field_id != self._current_field_id` 触发 _collect_widget_value，
+        把"上一个记录、上一个字段"的控件内容写进了**新记录**的缓存；随后任何
+        一次 _flush_record 就把它持久化进新记录 —— 静默的跨记录串值。
+        触发条件很普通：在记录 A 里 Tab 到任意非首个字段，再切到记录 B。
+
+        注意 _collect_widget_value 只在 _current_field_id 非空时生效，
+        所以第 2 步之后的重建不会再采集任何东西。
+        """
+        self._collect_widget_value()      # 写回旧 _values（旧记录）
+        self._current_field_id = ""       # 断开旧字段，防止下面再次采集
         self._fields = template.fields[:]
         self._record = record
         self._values = dict(record.values)
         for f in self._fields:
             if f.id not in self._values:
-                self._values[f.id] = f.default_value or ""
+                # checked_by_default 是"新记录里这个勾选框默认是勾上的"
+                if f.field_type == "checkbox" and f.checked_by_default:
+                    self._values[f.id] = "true"
+                else:
+                    self._values[f.id] = f.default_value or ""
         ordered = sorted(self._fields, key=lambda f: (f.page, f.tab_order, f.name))
         if ordered:
             self.set_current_field(ordered[0].id)
@@ -558,24 +615,38 @@ class FieldFillPanel(QWidget):
         self._update_progress()
 
     def sync_value(self, field_id: str, value: str):
-        """静默同步值缓存：更新缓存；若该字段控件正显示，也把控件同步成该值"""
+        """静默同步值缓存：更新缓存；若该字段控件正显示，也把控件同步成该值。
+
+        控件的回写**必须先比较是否相同**：每一次按键都会走
+        textChanged → field_value_changed → 这里，而 Qt 的
+        QTextEdit.setPlainText / QLineEdit.setText 语义是"清空后重设"
+        （不是幂等 no-op），于是光标被顶到末尾、选区丢失、撤销历史被清空 ——
+        用户在多行框中间补字时每敲一个键都会跳。值相同就什么都不做。
+        """
         self._values[field_id] = value
         if field_id == self._current_field_id and self._current_widget is not None:
             w = self._current_widget
             w.blockSignals(True)
             try:
                 if isinstance(w, QLineEdit):
-                    w.setText(value)
+                    if w.text() != value:
+                        w.setText(value)
                 elif isinstance(w, QTextEdit):
-                    w.setPlainText(value)
+                    if w.toPlainText() != value:
+                        w.setPlainText(value)
                 elif isinstance(w, QComboBox):
-                    idx = w.findData(value)
-                    w.setCurrentIndex(idx if idx >= 0 else 0)
+                    if w.currentData() != value:
+                        idx = w.findData(value)
+                        w.setCurrentIndex(idx if idx >= 0 else 0)
                 elif isinstance(w, QDateEdit):
-                    d = QDate.fromString(value, "yyyy-MM-dd")
-                    w.setDate(d if d.isValid() else DATE_MIN)
+                    new_text = "" if w.date() == DATE_MIN else w.date().toString("yyyy-MM-dd")
+                    if new_text != value:
+                        d = QDate.fromString(value, "yyyy-MM-dd")
+                        w.setDate(d if d.isValid() else DATE_MIN)
                 elif isinstance(w, QCheckBox):
-                    w.setChecked(value.lower() in ("true", "1", "yes", "√", "✓", "是"))
+                    checked = is_truthy(value)
+                    if w.isChecked() != checked:
+                        w.setChecked(checked)
             finally:
                 w.blockSignals(False)
         self._update_progress()
@@ -655,13 +726,19 @@ class FieldFillPanel(QWidget):
             widget = w
         elif field.field_type == "checkbox":
             w = QCheckBox("已勾选此项")
-            w.setChecked(value.lower() in ("true", "yes", "1", "√", "✓", "是"))
+            w.setChecked(is_truthy(value))
             w.toggled.connect(lambda checked, fid=field.id: self._on_widget_changed(fid))
             widget = w
         elif field.field_type == "number":
             w = QLineEdit()
             w.setPlaceholderText("输入数字…")
             w.setText(value)
+            # 数字字段之前完全不做校验，"abc" 会被原样烧进 PDF。
+            # QDoubleValidator 允许"中间态"（"-"、""、"1."），既能拦下字母，
+            # 又不会妨碍正常输入。
+            validator = QDoubleValidator(-1e12, 1e12, 6, w)
+            validator.setNotation(QDoubleValidator.Notation.StandardNotation)
+            w.setValidator(validator)
             w.textChanged.connect(lambda v, fid=field.id: self._on_widget_changed(fid))
             widget = w
         elif field.multiline:
@@ -669,6 +746,13 @@ class FieldFillPanel(QWidget):
             w.setPlaceholderText(f"输入{field.name}…")
             w.setPlainText(value)
             w.setMaximumHeight(130)
+            if field.max_length > 0:
+                # QTextEdit 没有 setMaxLength，用 textChanged 事后截断。
+                # 历史缺陷：max_length 只对单行文本生效，多行/数字/下拉被忽略，
+                # 面板上却照样显示"最多 N 字"的提示。
+                w.textChanged.connect(
+                    lambda fid=field.id, w=w: self._enforce_max_length(fid, w)
+                )
             w.textChanged.connect(lambda fid=field.id: self._on_widget_changed(fid))
             widget = w
         else:
@@ -685,6 +769,24 @@ class FieldFillPanel(QWidget):
         self._current_widget = widget
         widget.setFocus()  # 点击画布字段或 Tab 跳转后可直接输入，无需再点一下
         self._update_progress()
+
+    def _enforce_max_length(self, field_id: str, widget):
+        """多行文本框的长度上限（QTextEdit 自身没有 setMaxLength）"""
+        field = next((f for f in self._fields if f.id == field_id), None)
+        if field is None or field.max_length <= 0:
+            return
+        text = widget.toPlainText()
+        if len(text) <= field.max_length:
+            return
+        cursor_pos = widget.textCursor().position()
+        widget.blockSignals(True)
+        try:
+            widget.setPlainText(text[:field.max_length])
+            cur = widget.textCursor()
+            cur.setPosition(min(cursor_pos, field.max_length))
+            widget.setTextCursor(cur)
+        finally:
+            widget.blockSignals(False)
 
     def _on_widget_changed(self, field_id: str):
         if self._current_widget is None:
@@ -705,7 +807,7 @@ class FieldFillPanel(QWidget):
         for f in self._fields:
             v = self._values.get(f.id, "")
             if f.field_type == "checkbox":
-                is_filled = v.lower() in ("true", "1", "yes", "√", "✓", "是")
+                is_filled = is_truthy(v)
             else:
                 is_filled = bool(v and str(v).strip())
             if is_filled:

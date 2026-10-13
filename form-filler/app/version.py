@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-VERSION = "1.0.5"
-BUILD_DATE = "2026-09-21"
+VERSION = "1.0.6"
+BUILD_DATE = "2026-10-13"
 VERSION_TEXT = f"v{VERSION} · {BUILD_DATE}"

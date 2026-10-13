@@ -34,7 +34,7 @@ from app.ui.theme import apply_role
 from app.core.template_manager import TemplateManager
 from app.core.record_manager import RecordManager
 from app.core.settings import load_settings, save_settings
-from app.core.field_model import TemplateMeta, FillRecord
+from app.core.field_model import TemplateMeta, FillRecord, is_truthy
 
 
 class MainWindow(QMainWindow):
@@ -552,7 +552,12 @@ class MainWindow(QMainWindow):
             self, "重命名记录", "记录名称：", text=record.name
         )
         if ok and name.strip():
-            self.record_manager.rename(self._current_template.id, record_id, name.strip())
+            new_name = name.strip()
+            self.record_manager.rename(self._current_template.id, record_id, new_name)
+            # 内存里的当前记录必须一起改名：否则之后任何一次自动保存
+            # （_save_current_record 整份覆写 JSON）都会把名字改回旧的。
+            if self._current_record and self._current_record.id == record_id:
+                self._current_record.name = new_name
             self._refresh_records()
 
     def _on_record_delete(self, record_id: str):
@@ -578,10 +583,15 @@ class MainWindow(QMainWindow):
             if remaining:
                 self._current_record = remaining[0]
             else:
+                # 删的是最后一条记录：必须立刻落盘，否则 _refresh_records 从磁盘
+                # 读到 0 条，下拉框被清空并禁用，而创建出来的这条记录没有任何路径
+                # 会再触发 _refresh_records（保存/导出都不会），重命名/删除按钮
+                # 因 currentData() 为空而静默无反应。
                 self._current_record = self.record_manager.create(
                     self._current_template.id,
                     self.record_manager.next_name(self._current_template.id),
                 )
+                self.record_manager.save(self._current_record)
             self.fill_mode.set_record(self._current_record)
             self.field_fill_panel.load_fields(self._current_template, self._current_record)
         self._refresh_records()
@@ -629,7 +639,7 @@ class MainWindow(QMainWindow):
                     continue
                 v = values.get(f.id, f.default_value or "")
                 if f.field_type == "checkbox":
-                    filled = v.lower() in ("true", "1", "yes", "√", "✓", "是")
+                    filled = is_truthy(v)
                 else:
                     filled = bool(v and str(v).strip())
                 if not filled:
@@ -670,7 +680,10 @@ class MainWindow(QMainWindow):
         self._flush_record()
         from app.ui.preview_dialog import PreviewDialog
         dialog = PreviewDialog(
-            self._current_template, self._current_record, self.template_manager, self
+            self._current_template, self._current_record, self.template_manager, self,
+            # 预览窗里的"导出/打印"必须走同一套必填校验，否则读 README 的
+            # "导出/打印前提示漏填"就有了旁路。
+            before_export=self._confirm_required,
         )
         dialog_exec(dialog)
 
@@ -723,7 +736,7 @@ class MainWindow(QMainWindow):
         self._flush_record()
         filepath = self._choose_export_path()
         if filepath:
-            from app.core.pdf_engine import burn_text
+            from app.core.pdf_engine import burn_text, missing_burned_fields
             pdf_path = self.template_manager.get_pdf_path(self._current_template.id)
             try:
                 burn_text(
@@ -733,9 +746,22 @@ class MainWindow(QMainWindow):
                     self._current_template.page_settings,
                     filepath,
                 )
+                # 导出完整性校验：写不进去的字段必须说出来，不能只弹"导出成功"
+                missing = missing_burned_fields(
+                    filepath, self._current_template.fields, self._current_record.values
+                )
                 self._set_status(f"PDF 已导出 - {filepath}")
                 self._settings["last_export_dir"] = os.path.dirname(filepath)
                 save_settings(self.data_dir, self._settings)
+                if missing:
+                    QMessageBox.warning(
+                        self, "导出完成，但有字段没写进去",
+                        "以下字段有内容，但没能写进导出的 PDF：\n\n"
+                        + "、".join(missing[:8])
+                        + ("…" if len(missing) > 8 else "")
+                        + "\n\n请检查这些字段的位置/大小是否有效，"
+                          "或先用「预览」确认内容。",
+                    )
                 self._notify_export_done(filepath)
             except Exception as e:
                 QMessageBox.critical(self, "导出失败", str(e))
@@ -778,12 +804,24 @@ class MainWindow(QMainWindow):
         self._status_label.setText(message)
 
     def closeEvent(self, event):
-        # 退出前自动保存，避免丢数据
+        # 退出前自动保存，避免丢数据。
+        # 历史缺陷：这里 except Exception: pass —— 保存失败（磁盘满、目录被删、
+        # 权限不足）时用户直接退出，以为已经存好，实际全丢了。现在明确告知并
+        # 给一次取消退出的机会。
         try:
             if self.center_stack.currentIndex() == self.MODE_DESIGN and self._current_template:
                 self._save_template()
             if self.center_stack.currentIndex() == self.MODE_FILL:
                 self._save_current_record()
-        except Exception:
-            pass
+        except Exception as e:
+            reply = QMessageBox.critical(
+                self, "保存失败，仍要退出吗？",
+                f"退出前自动保存草稿时出错，最近一次的修改可能丢失。\n\n"
+                f"{type(e).__name__}: {e}\n\n"
+                "建议先复制一份数据目录再退出。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
         event.accept()

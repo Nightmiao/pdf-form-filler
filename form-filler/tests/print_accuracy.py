@@ -20,6 +20,14 @@ import sys, os, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+# 输出编码兜底（同 audit_verify / ui_layout_check）：重定向时 Windows 退回 GBK，
+# 打印 ✗ / ═ 会抛 UnicodeEncodeError 导致脚本中途退出。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 import fitz
 from app.qt import QtWidgets, QtGui, QtCore, QtPrintSupport
 from app.qt import printer_high_resolution, printer_device_pixel

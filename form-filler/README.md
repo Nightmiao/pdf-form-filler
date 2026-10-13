@@ -69,18 +69,25 @@
 
 ## 自动化测试
 
-离屏自动化测试共四套，两套环境（开发机 PySide6/Qt6 与 Win7 兼容环境
+离屏自动化测试共五套，两套环境（开发机 PySide6/Qt6 与 Win7 兼容环境
 Python 3.8/3.9 + PySide2/Qt5）都必须全绿：
 
-    venv\Scripts\python.exe tests\smoke_test.py         # 全流程冒烟/回归 + 界面截图
-    venv\Scripts\python.exe tests\audit_verify.py       # 旋转几何 / 并发 / 句柄审计
-    venv\Scripts\python.exe tests\print_accuracy.py     # 打印落点精度（需要打印机）
-    venv\Scripts\python.exe tests\ui_layout_check.py    # 1024x768 小屏布局 + Win7 字体安全
+    venv\Scripts\python.exe tests\smoke_test.py          # 全流程冒烟/回归 + 界面截图
+    venv\Scripts\python.exe tests\audit_verify.py        # 旋转几何 / 并发 / 句柄审计
+    venv\Scripts\python.exe tests\regression_v106.py     # v1.0.6 审计修复回归（51 项）
+    venv\Scripts\python.exe tests\print_accuracy.py      # 打印落点精度（需要打印机）
+    venv\Scripts\python.exe tests\ui_layout_check.py     # 1024x768 小屏布局 + Win7 字体安全
 
 覆盖点：建模板 → 画字段 → 页面旋转精确换算 → 撤销/重做 → 排序同步 → 跨页 Tab →
 填写/保存 → 烧录校验（含 15° 任意角度与页面矫正角导出）→ 记录切换持久化 →
 非法字段防御 → 导出路径防覆盖 → 预览异常保护 → 缩略图异步渲染 → LRU 缓存 →
-搜索防抖 → 必填校验 → **打印落点误差 < 0.4mm** → **1024x768 下关键按钮不被溢出菜单吞掉**。
+搜索防抖 → 必填校验 → **打印落点误差 < 0.4mm** → **1024x768 下关键按钮不被溢出菜单吞掉** →
+**跳远页不崩、页面矫正角不扭曲字段、跨记录不串值、导出不丢字段**。
+
+> **tests/regression_v106.py 为什么重要**：它逐条对应 v1.0.6 修掉的一批缺陷，
+> 而且刻意避开了原有用例里"用巧合绕过真实分支"的写法 —— 例如 audit_verify 的
+> 快速翻页用例会自己往 `_render_jobs` 里塞一个任务，于是永远走不到真正会崩的
+> 那条分支。详见 docs/审计修复说明-v1.0.6.md。
 
 > **tests/print_accuracy.py 为什么重要**：早期版本把 `QPrinter.pageRect()` 的
 > 页边距当成画笔偏移量叠加，导致整页内容向右下平移一个页边距（A4 实测 3.5mm），

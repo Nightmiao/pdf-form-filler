@@ -104,6 +104,8 @@ class FillMode(QWidget):
         self._canvas = PdfCanvas()
         self._canvas.set_mode(PdfCanvas.MODE_FILL)
         self._canvas.zoom_changed.connect(self._on_canvas_zoom_changed)
+        # 翻页后必须重放填写值（见 _on_canvas_page_changed 说明）
+        self._canvas.current_page_changed.connect(self._on_canvas_page_changed)
         layout.addWidget(self._canvas, stretch=1)
 
     # ── 公共方法 ──────────────────────────────────
@@ -144,6 +146,17 @@ class FillMode(QWidget):
 
     def _on_canvas_zoom_changed(self, percent: int):
         self._zoom_label.setText(f"{percent}%")
+
+    def _on_canvas_page_changed(self, page_num: int):
+        """翻页后重放填写值。
+
+        历史缺陷：show_page 会 _scene.clear() 并按字段重建图元，而新建的
+        FieldItem._fill_value 恒为空字符串；值只在 load_template / set_record /
+        set_current_page 三处补过。于是按 Tab 跨页、或用"必填跳转"翻页后，
+        目标页已填的内容在画布蓝框里显示为空白（数据其实一直在记录里），
+        用户会以为没保存。挂到 current_page_changed 上一次覆盖所有翻页入口。
+        """
+        self._sync_canvas_values()
 
     def _sync_canvas_values(self):
         if self._record:

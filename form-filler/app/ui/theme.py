@@ -9,6 +9,15 @@ QPushButton = QtWidgets.QPushButton
 QStyle = QtWidgets.QStyle
 
 # ── 调色板 ──────────────────────────────────────────
+# 分工说明（避免后人误以为二者会自动同步）：
+#   * COLORS 供 **QPainter 自绘元素** 使用（图标、对齐线、字段框、卡片绘制等），
+#     代码里通过 COLORS["primary"] 这样取值，改一处即可全局生效；
+#   * 下面的 APP_STYLESHEET 是 **Qt 样式表（CSS 层）**，色值按 CSS 习惯直接写成
+#     字面量，目前是 138 处硬编码。
+# 也就是说调色板存在"两份真相"：改 COLORS 不会同步改到样式表。
+# 本轮（v1.0.6）只补这条说明、未做机械替换 —— 那需要逐条比对渲染结果，
+# 回归成本高于收益；若将来要做，建议引入一次性的 CSS 变量替换并配合
+# ui_layout_check 的截图比对。
 COLORS = {
     "bg": "#F4F6F9",
     "surface": "#FFFFFF",

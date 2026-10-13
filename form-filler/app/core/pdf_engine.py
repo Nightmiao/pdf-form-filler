@@ -16,6 +16,7 @@ import math
 import threading
 import fitz  # PyMuPDF
 from app.qt import QtGui, QtCore
+from app.core.field_model import is_truthy
 
 QPixmap = QtGui.QPixmap
 QSizeF = QtCore.QSizeF
@@ -64,6 +65,34 @@ def rotate_rect_ccw(
     x0, y0 = rotate_point_ccw(rect[0], rect[1], cx, cy, angle_deg)
     x1, y1 = rotate_point_ccw(rect[2], rect[3], cx, cy, angle_deg)
     return (x0, y0, x1, y1)
+
+
+def rotate_rect_about_center(
+    rect: tuple[float, float, float, float],
+    cx: float, cy: float, angle_deg: float,
+) -> tuple[float, float, float, float]:
+    """把轴对齐矩形绕 (cx, cy) 旋转 angle_deg：**只旋转中心点，宽高保持不变**。
+
+    这是"页面矫正角只影响显示"这一契约的正确实现，也是与
+    `rotate_rect_cw` 的关键区别：
+
+    - `rotate_rect_cw` 只把两个对角点分别旋转，得到的两个点**不再是轴对齐
+      矩形的对角点**。若调用方再把 (x1-x0, y1-y0) 当作宽高，就会把真实的
+      w×h 换成"旋转后对角线"的投影
+      (w·cosθ−h·sinθ) × (w·sinθ+h·cosθ) —— 100×30 的框在 5° 下会变成
+      97×38.6，高度虚胖 29%。历史上画布与导出都用错在这里。
+    - 本函数保持宽高、只把中心点绕 (cx, cy) 旋转，因此配合"字段自身角度 +=
+      页面矫正角"就得到唯一正确的显示几何：字段绕页面中心转 θ，形状不变。
+
+    与 `rotate_rect_cw/ccw` 一样，本函数与其逆运算（传 -angle_deg）精确互逆。
+    """
+    x0, y0, x1, y1 = rect
+    if angle_deg == 0:
+        return (x0, y0, x1, y1)
+    mx, my = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    nx, ny = rotate_point_cw(mx, my, cx, cy, angle_deg)
+    hw, hh = (x1 - x0) / 2.0, (y1 - y0) / 2.0
+    return (nx - hw, ny - hh, nx + hw, ny + hh)
 
 
 def normalize_angle(angle: float) -> float:
@@ -129,9 +158,10 @@ class PdfSource:
 
 def get_page_count(pdf_path: str) -> int:
     doc = fitz.open(pdf_path)
-    count = doc.page_count
-    doc.close()
-    return count
+    try:
+        return doc.page_count
+    finally:
+        doc.close()
 
 
 # ── 渲染 ───────────────────────────────────────────
@@ -187,26 +217,79 @@ def burn_text(
         output_path = f"{base}_filled{ext}"
 
     doc = fitz.open(pdf_path)
-    page_count = doc.page_count
-    page_settings = page_settings or []
+    try:
+        page_count = doc.page_count
+        page_settings = page_settings or []
 
-    cjk_font = _find_cjk_font()
-    if cjk_font:
-        for page_num in range(page_count):
+        cjk_font = _find_cjk_font()
+        if cjk_font:
+            for page_num in range(page_count):
+                try:
+                    doc[page_num].insert_font(fontfile=cjk_font, fontname="CJKFont")
+                except Exception:
+                    pass
+
+        for field in fields:
             try:
-                doc[page_num].insert_font(fontfile=cjk_font, fontname="CJKFont")
+                _burn_field(doc, field, values, page_settings, cjk_font)
             except Exception:
-                pass
+                continue  # 单个字段失败不影响其余字段
 
-    for field in fields:
-        try:
-            _burn_field(doc, field, values, page_settings, cjk_font)
-        except Exception:
-            continue  # 单个字段失败不影响其余字段
-
-    doc.save(output_path)
-    doc.close()
+        doc.save(output_path)
+    finally:
+        doc.close()
     return output_path
+
+
+def expected_burned_text(field, values: dict) -> str:
+    """该字段"本应被烧录进 PDF"的文字；无内容/不勾选时返回空串。
+
+    与 _burn_field 的取值口径保持一致（含勾选框归一化成 √）。
+    """
+    field_id = getattr(field, "id", None)
+    value = values.get(field_id, getattr(field, "default_value", "")) if field_id else ""
+    if not value:
+        return ""
+    if getattr(field, "field_type", "text") == "checkbox":
+        return "√" if is_truthy(value) else ""
+    return str(value)
+
+
+def missing_burned_fields(output_path: str, fields: list, values: dict) -> list:
+    """校验导出结果：返回"有内容却没写进 PDF"的字段名列表。
+
+    为什么需要它：打印路径一直有"有值却提取不到文字"的自检，导出路径却**无条件**
+    弹"导出成功"；而 burn_text 对于越界页码、退化矩形、字体写入失败等情况是
+    `except: continue` 静默跳过的。于是一份缺了字段的表单会以"成功"的面目交到
+    用户手里 —— 对一个要拿去报账的工具来说，这是最不该静默的一类失败。
+    """
+    names = []
+    try:
+        doc = fitz.open(output_path)
+    except Exception:
+        return [getattr(f, "name", "?") for f in fields]
+    try:
+        page_text = {}
+        for i in range(doc.page_count):
+            try:
+                page_text[i] = "".join(doc[i].get_text().split())
+            except Exception:
+                page_text[i] = ""
+        for field in fields:
+            want = expected_burned_text(field, values)
+            if not want:
+                continue
+            name = getattr(field, "name", "?")
+            page_num = int(getattr(field, "page", 0) or 0)
+            if not (0 <= page_num < doc.page_count):
+                names.append(name)
+                continue
+            needle = "".join(want.split())
+            if needle and needle not in page_text.get(page_num, ""):
+                names.append(name)
+    finally:
+        doc.close()
+    return names
 
 
 def _burn_field(doc, field, values, page_settings, cjk_font):
@@ -230,7 +313,7 @@ def _burn_field(doc, field, values, page_settings, cjk_font):
         return
 
     if getattr(field, "field_type", "text") == "checkbox":
-        checked = value.lower() in ("true", "yes", "✓", "√", "是", "1", "on")
+        checked = is_truthy(value)
         if not checked:
             return
         value = "√"
@@ -260,7 +343,10 @@ def _burn_field(doc, field, values, page_settings, cjk_font):
         # 再把基准点换算回 PDF 坐标，并用 morph 矩阵写入任意角度。
         page_rect = page.rect
         pcx, pcy = page_rect.width / 2, page_rect.height / 2
-        disp_rect = fitz.Rect(*rotate_rect_cw(
+        # 显示排版框 = 原矩形绕页中心旋转 page_rot（宽高不变）。
+        # 不能用 rotate_rect_cw：那会把宽高换成旋转后对角线的投影，
+        # 导致自动缩字号与对齐位置随页面矫正角漂移（与画布显示不一致）。
+        disp_rect = fitz.Rect(*rotate_rect_about_center(
             (rect.x0, rect.y0, rect.x1, rect.y1), pcx, pcy, page_rot
         ))
         _insert_text_rotated(
