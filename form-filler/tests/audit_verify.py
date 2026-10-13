@@ -20,6 +20,16 @@ import json
 import shutil
 import tempfile
 
+# 输出编码兜底：本文件会打印 ✓/✗/═ 等字符，而 Windows 下 stdout 一旦被重定向
+# 到文件或管道就退回 GBK(cp936)，print 会抛 UnicodeEncodeError 并让脚本**中途退出**
+# —— A2 之后的用例根本不会执行，表现成"退出码 1 却看不出哪里错"。
+# CI 用 PYTHONIOENCODING=utf-8 掩盖了它，本地直接重定向就中招。这里主动切成 UTF-8。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

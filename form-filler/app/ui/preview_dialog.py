@@ -25,11 +25,16 @@ class PreviewDialog(QDialog):
 
     PREVIEW_DPI = 150
 
-    def __init__(self, template, record, template_manager, parent=None):
+    def __init__(self, template, record, template_manager, parent=None,
+                 before_export=None):
         super().__init__(parent)
         self._template = template
         self._record = record
         self._template_manager = template_manager
+        # 导出/打印前的校验回调（返回 True 才继续）。
+        # 历史缺陷：预览弹窗里的"导出 PDF / 打印"完全绕过了必填校验，
+        # 同一条路径在主界面会被拦下，在这里却直接放行。
+        self._before_export = before_export
         self._output_path = ""
         self._failed = False
         self._export_btn = None
@@ -224,8 +229,19 @@ class PreviewDialog(QDialog):
 
     # ── 导出 / 打印 ───────────────────────────────
 
+    def _passes_required_check(self) -> bool:
+        """必填校验（与主界面导出/打印同一套），未通过则中断本次操作"""
+        if self._before_export is None:
+            return True
+        try:
+            return bool(self._before_export())
+        except Exception:
+            return True
+
     def _export(self):
         if self._failed or not self._output_path:
+            return
+        if not self._passes_required_check():
             return
         default_name = f"{self._template.name}_已填写.pdf"
         original = os.path.normcase(os.path.abspath(
@@ -255,6 +271,8 @@ class PreviewDialog(QDialog):
 
     def _print(self):
         if self._failed:
+            return
+        if not self._passes_required_check():
             return
         from app.ui.print_helper import print_filled_pdf
         print_filled_pdf(

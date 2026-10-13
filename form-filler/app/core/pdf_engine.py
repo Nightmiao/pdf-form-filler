@@ -66,6 +66,34 @@ def rotate_rect_ccw(
     return (x0, y0, x1, y1)
 
 
+def rotate_rect_about_center(
+    rect: tuple[float, float, float, float],
+    cx: float, cy: float, angle_deg: float,
+) -> tuple[float, float, float, float]:
+    """把轴对齐矩形绕 (cx, cy) 旋转 angle_deg：**只旋转中心点，宽高保持不变**。
+
+    这是"页面矫正角只影响显示"这一契约的正确实现，也是与
+    `rotate_rect_cw` 的关键区别：
+
+    - `rotate_rect_cw` 只把两个对角点分别旋转，得到的两个点**不再是轴对齐
+      矩形的对角点**。若调用方再把 (x1-x0, y1-y0) 当作宽高，就会把真实的
+      w×h 换成"旋转后对角线"的投影
+      (w·cosθ−h·sinθ) × (w·sinθ+h·cosθ) —— 100×30 的框在 5° 下会变成
+      97×38.6，高度虚胖 29%。历史上画布与导出都用错在这里。
+    - 本函数保持宽高、只把中心点绕 (cx, cy) 旋转，因此配合"字段自身角度 +=
+      页面矫正角"就得到唯一正确的显示几何：字段绕页面中心转 θ，形状不变。
+
+    与 `rotate_rect_cw/ccw` 一样，本函数与其逆运算（传 -angle_deg）精确互逆。
+    """
+    x0, y0, x1, y1 = rect
+    if angle_deg == 0:
+        return (x0, y0, x1, y1)
+    mx, my = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    nx, ny = rotate_point_cw(mx, my, cx, cy, angle_deg)
+    hw, hh = (x1 - x0) / 2.0, (y1 - y0) / 2.0
+    return (nx - hw, ny - hh, nx + hw, ny + hh)
+
+
 def normalize_angle(angle: float) -> float:
     """把角度归一到 (-180, 180]"""
     a = angle % 360.0
@@ -260,7 +288,10 @@ def _burn_field(doc, field, values, page_settings, cjk_font):
         # 再把基准点换算回 PDF 坐标，并用 morph 矩阵写入任意角度。
         page_rect = page.rect
         pcx, pcy = page_rect.width / 2, page_rect.height / 2
-        disp_rect = fitz.Rect(*rotate_rect_cw(
+        # 显示排版框 = 原矩形绕页中心旋转 page_rot（宽高不变）。
+        # 不能用 rotate_rect_cw：那会把宽高换成旋转后对角线的投影，
+        # 导致自动缩字号与对齐位置随页面矫正角漂移（与画布显示不一致）。
+        disp_rect = fitz.Rect(*rotate_rect_about_center(
             (rect.x0, rect.y0, rect.x1, rect.y1), pcx, pcy, page_rot
         ))
         _insert_text_rotated(

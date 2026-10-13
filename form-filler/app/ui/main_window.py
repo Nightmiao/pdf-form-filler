@@ -552,7 +552,12 @@ class MainWindow(QMainWindow):
             self, "重命名记录", "记录名称：", text=record.name
         )
         if ok and name.strip():
-            self.record_manager.rename(self._current_template.id, record_id, name.strip())
+            new_name = name.strip()
+            self.record_manager.rename(self._current_template.id, record_id, new_name)
+            # 内存里的当前记录必须一起改名：否则之后任何一次自动保存
+            # （_save_current_record 整份覆写 JSON）都会把名字改回旧的。
+            if self._current_record and self._current_record.id == record_id:
+                self._current_record.name = new_name
             self._refresh_records()
 
     def _on_record_delete(self, record_id: str):
@@ -578,10 +583,15 @@ class MainWindow(QMainWindow):
             if remaining:
                 self._current_record = remaining[0]
             else:
+                # 删的是最后一条记录：必须立刻落盘，否则 _refresh_records 从磁盘
+                # 读到 0 条，下拉框被清空并禁用，而创建出来的这条记录没有任何路径
+                # 会再触发 _refresh_records（保存/导出都不会），重命名/删除按钮
+                # 因 currentData() 为空而静默无反应。
                 self._current_record = self.record_manager.create(
                     self._current_template.id,
                     self.record_manager.next_name(self._current_template.id),
                 )
+                self.record_manager.save(self._current_record)
             self.fill_mode.set_record(self._current_record)
             self.field_fill_panel.load_fields(self._current_template, self._current_record)
         self._refresh_records()
@@ -670,7 +680,10 @@ class MainWindow(QMainWindow):
         self._flush_record()
         from app.ui.preview_dialog import PreviewDialog
         dialog = PreviewDialog(
-            self._current_template, self._current_record, self.template_manager, self
+            self._current_template, self._current_record, self.template_manager, self,
+            # 预览窗里的"导出/打印"必须走同一套必填校验，否则读 README 的
+            # "导出/打印前提示漏填"就有了旁路。
+            before_export=self._confirm_required,
         )
         dialog_exec(dialog)
 

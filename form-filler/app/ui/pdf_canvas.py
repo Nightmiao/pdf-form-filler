@@ -48,7 +48,7 @@ QMouseEvent = QtGui.QMouseEvent
 
 from app.core.pdf_engine import (
     PdfSource, bytes_to_pixmap, rotate_point_cw, rotate_point_ccw,
-    rotate_rect_cw, rotate_rect_ccw, normalize_angle,
+    rotate_rect_about_center, rotate_rect_cw, rotate_rect_ccw, normalize_angle,
 )
 from app.core.field_model import FieldDefinition, PageSettings
 from app.ui.field_item import FieldItem
@@ -60,6 +60,8 @@ SCALE = DPI / 72.0  # PDF point → pixel
 
 MAX_UNDO = 50
 MAX_CACHED_PIXMAPS = 6  # 页面像素缓存上限（LRU）
+ZOOM_MIN = 0.1          # 统一缩放限幅（原先四处不一致）
+ZOOM_MAX = 6.0
 
 
 class PdfCanvas(QGraphicsView):
@@ -90,12 +92,14 @@ class PdfCanvas(QGraphicsView):
         self._current_page: int = 0
         self._page_pixmaps: "OrderedDict[int, QPixmap]" = OrderedDict()
         self._page_size_pdf: dict[int, tuple[float, float]] = {}
+        self._failed_pages: set[int] = set()      # 渲染失败的页（保留重试机会）
         self._page_settings: list[PageSettings] = []
         self._render_jobs: dict[int, dict] = {}  # 后台渲染任务
         self._render_timer = QTimer(self)
         self._render_timer.setInterval(60)
         self._render_timer.timeout.connect(self._collect_render_jobs)
         self._render_timer.start()
+        self._pixmap_item: QGraphicsPixmapItem | None = None   # 当前页位图图元
 
         self._fields: list[FieldDefinition] = []
         self._field_items: dict[str, FieldItem] = {}
@@ -134,6 +138,7 @@ class PdfCanvas(QGraphicsView):
         self._undo_stack: list[dict] = []
         self._redo_stack: list[dict] = []
         self._interaction_baseline: dict | None = None  # 拖拽开始时的快照
+        self._nudge_baseline: dict | None = None        # 方向键手势开始时的快照
         self._prop_baseline_id: str | None = None       # 属性连续编辑合并
 
         self.setRenderHint(RENDER_ANTIALIASING)
@@ -176,8 +181,10 @@ class PdfCanvas(QGraphicsView):
         ]
         self._page_pixmaps.clear()
         self._page_size_pdf.clear()
+        self._failed_pages.clear()
         self._render_jobs.clear()
         self._scene.clear()
+        self._reset_scene_refs()
         self._field_items.clear()
         self._fields = []
         self._selected_field_item = None
@@ -200,39 +207,70 @@ class PdfCanvas(QGraphicsView):
                 keys = list(self._page_pixmaps.keys())
                 oldest = keys[1]
             self._page_pixmaps.pop(oldest, None)
-            self._page_size_pdf.pop(oldest, None)
+        # _page_size_pdf 不随像素缓存淘汰：它是页面几何的权威值，与像素无关
+        # 且数据极小，丢掉只会让坐标换算退化成 (0,0) 这种静默腐蚀型默认值。
+
+    def _page_size_pdf_of(self, page_num: int) -> tuple[float, float]:
+        """页面尺寸（PDF 点），**以 PDF 自身为准**，不从渲染位图反推。
+
+        历史缺陷：页面尺寸曾由渲染出的位图反推（pixmap.width()/SCALE），
+        而渲染失败时会伪造一张 100×140 的空白图，于是页面尺寸被写成
+        48×67.2pt（A4 实为 595×842），所有绕页中心的换算（页面旋转、
+        画框落点）全部算错，且因为进了缓存永不重试。
+        """
+        size = self._page_size_pdf.get(page_num)
+        if size is None:
+            size = (0.0, 0.0)
+            if self._source is not None:
+                try:
+                    s = self._source.page_size(page_num)
+                    size = (float(s.width()), float(s.height()))
+                except Exception:
+                    size = (0.0, 0.0)
+            self._page_size_pdf[page_num] = size
+        return size
+
+    def _placeholder_pixmap(self, page_num: int) -> QPixmap:
+        """渲染失败时的占位图：尺寸按**真实页面尺寸**造，保证坐标基准不被污染"""
+        w, h = self._page_size_pdf_of(page_num)
+        if w <= 0 or h <= 0:
+            w, h = 595.0, 842.0
+        pm = QPixmap(max(1, int(round(w * SCALE))), max(1, int(round(h * SCALE))))
+        pm.fill(QColor(255, 255, 255))
+        return pm
 
     def _ensure_page_pixmap(self, page_num: int):
-        """确保某页像素已渲染（当前页同步；其余走后台预取）
+        """确保"要显示的这一页"的像素已经在缓存里（同步渲染）。
 
-        关键：目标页的后台渲染任务还在途时也必须同步兜底渲染，
-        否则 show_page 随后取缓存会 KeyError（快速翻页必现崩溃）。
+        历史缺陷：这里曾经在"目标页既不在缓存、也不在 _render_jobs 中"时
+        走后台预取分支并直接返回，而 show_page 紧接着无条件执行
+        `self._page_pixmaps[page_num]` → KeyError。触发条件非常普通：
+        多页表单上点一个隔了 2 页以上的缩略图（相邻页永远在预取里，所以
+        2 页表单永远看不出来）。崩溃时 _scene 已被清空、_current_page 已经
+        改号，画布会永久空白，且因为 set_current_page 的去重判断，重试无效。
+
+        现在：要显示的页一律同步渲染；后台预取只服务于相邻页（见 show_page）。
         """
-        if page_num in self._page_pixmaps:
+        if page_num in self._page_pixmaps and page_num not in self._failed_pages:
             return
-        if (
-            page_num == self._current_page
-            or page_num in self._render_jobs
-            or not self._page_pixmaps
-        ):
-            self._render_page_sync(page_num)
-        else:
-            self._request_render(page_num)
+        self._render_page_sync(page_num)
 
     def _render_page_sync(self, page_num: int):
-        if self._source is None or page_num in self._page_pixmaps:
+        """同步渲染一页；失败时用真实尺寸的空白占位图，并记录以便下次重试"""
+        if self._source is None:
             return
+        pixmap = QPixmap()
         try:
             pixmap = bytes_to_pixmap(self._source.render_page_bytes(page_num, DPI))
         except Exception:
             pixmap = QPixmap()
         if pixmap.isNull():
-            pixmap = QPixmap(100, 140)
-            pixmap.fill(QColor(255, 255, 255))
+            self._failed_pages.add(page_num)
+            pixmap = self._placeholder_pixmap(page_num)
+        else:
+            self._failed_pages.discard(page_num)
         self._cache_pixmap(page_num, pixmap)
-        self._page_size_pdf[page_num] = (
-            pixmap.width() / SCALE, pixmap.height() / SCALE
-        )
+        self._page_size_pdf_of(page_num)   # 填充权威页面尺寸
 
     def _request_render(self, page_num: int):
         """后台渲染一页（用于相邻页预取）"""
@@ -261,20 +299,41 @@ class PdfCanvas(QGraphicsView):
         for page_num in finished:
             job = self._render_jobs.pop(page_num)
             pixmap = bytes_to_pixmap(job["bytes"] or b"")
-            if not pixmap.isNull():
-                self._cache_pixmap(page_num, pixmap)
-                self._page_size_pdf[page_num] = (
-                    pixmap.width() / SCALE, pixmap.height() / SCALE
-                )
-                if page_num == self._current_page:
-                    self._update_page_display()
+            if pixmap.isNull():
+                # 渲染失败：标记该页，让它下次显示时有机会重新渲染；
+                # 绝不写入假像素，也不改页面尺寸。
+                self._failed_pages.add(page_num)
+                continue
+            self._failed_pages.discard(page_num)
+            self._cache_pixmap(page_num, pixmap)
+            self._page_size_pdf_of(page_num)
+            if page_num == self._current_page:
+                self._update_page_display()
+
+    def _reset_scene_refs(self):
+        """_scene.clear() 之后必须清掉所有指向"已被销毁的 C++ 图元"的引用。
+
+        历史缺陷：show_page / load_pdf / release_pdf 都调用 _scene.clear()，
+        但没有清 _pixmap_item / _guide_items / _draw_rect。clear() 会销毁底层
+        C++ 对象，而 Python 包装器仍被属性持有 —— 之后任何一次
+        `self._pixmap_item.setXxx()` 都会抛
+        RuntimeError: Internal C++ object already deleted
+        （hasattr 判不出来，因为它判断的是 Python 属性是否存在）。
+        """
+        self._pixmap_item = None
+        self._guide_items = []
+        self._draw_rect = None
+        self._draw_start = None
+        self._drawing = False
 
     def release_pdf(self):
         """释放 PDF 资源（返回首页时调用，释放内存与渲染任务）"""
         self._render_jobs.clear()
         self._page_pixmaps.clear()
         self._page_size_pdf.clear()
+        self._failed_pages.clear()
         self._scene.clear()
+        self._reset_scene_refs()
         self._field_items.clear()
         self._selected_field_item = None
         if self._source is not None:
@@ -295,19 +354,24 @@ class PdfCanvas(QGraphicsView):
         return 0.0
 
     def _page_center_pdf(self) -> tuple[float, float]:
-        w, h = self._page_size_pdf.get(self._current_page, (0, 0))
+        w, h = self._page_size_pdf_of(self._current_page)
         return (w / 2, h / 2)
 
     def show_page(self, page_num: int):
         if page_num < 0 or page_num >= self._page_count:
             return
         self._ensure_page_pixmap(page_num)
+        pixmap = self._page_pixmaps.get(page_num)
+        if pixmap is None or pixmap.isNull():
+            # 兜底：无论如何都不能在这里让整页崩掉（历史上这里 KeyError）
+            pixmap = self._placeholder_pixmap(page_num)
+            self._cache_pixmap(page_num, pixmap)
         self._scene.clear()
+        self._reset_scene_refs()
         self._field_items.clear()
         self._selected_field_item = None
         self._current_page = page_num
 
-        pixmap = self._page_pixmaps[page_num]
         self._pixmap_item = QGraphicsPixmapItem(pixmap)
         self._pixmap_item.setZValue(-10)
         self._scene.addItem(self._pixmap_item)
@@ -329,10 +393,12 @@ class PdfCanvas(QGraphicsView):
 
     def _update_page_display(self):
         """应用页面旋转：旋转图片图元并放大场景范围，避免旋转后被裁掉"""
-        if not hasattr(self, "_pixmap_item"):
+        if self._pixmap_item is None:
             return
         rot = self._current_page_rotation()
-        pixmap = self._page_pixmaps[self._current_page]
+        pixmap = self._page_pixmaps.get(self._current_page)
+        if pixmap is None or pixmap.isNull():
+            return
         self._pixmap_item.setTransformOriginPoint(pixmap.width() / 2, pixmap.height() / 2)
         self._pixmap_item.setRotation(rot)
 
@@ -359,29 +425,43 @@ class PdfCanvas(QGraphicsView):
     # ── 显示坐标 ↔ PDF 坐标 ───────────────────────
 
     def _field_to_display(self, field: FieldDefinition) -> FieldDefinition:
-        """PDF 坐标字段 → 显示坐标字段（精确角点旋转，无外接框近似）"""
+        """PDF 坐标字段 → 显示坐标字段。
+
+        契约：页面矫正角只影响显示 —— 字段绕页面中心旋转 rot，**形状（宽高）
+        保持不变**，字段自身角度 += rot。因此必须用 rotate_rect_about_center，
+        不能用 rotate_rect_cw（后者会把宽高换成旋转后对角线的投影，见 pdf_engine
+        中该函数的说明）。
+        """
         rot = self._current_page_rotation()
         if rot == 0:
             return copy.deepcopy(field)
         d = copy.deepcopy(field)
         pcx, pcy = self._page_center_pdf()
-        d.rect = rotate_rect_cw(field.rect, pcx, pcy, rot)
+        d.rect = rotate_rect_about_center(field.rect, pcx, pcy, rot)
         d.rotation = normalize_angle(field.rotation + rot)
         return d
 
     def _field_to_pdf(self, field: FieldDefinition) -> FieldDefinition:
-        """显示坐标字段 → PDF 坐标字段（精确角点旋转）"""
+        """显示坐标字段 → PDF 坐标字段（rotate_rect_about_center 的精确逆运算）"""
         rot = self._current_page_rotation()
         if rot == 0:
             return copy.deepcopy(field)
         d = copy.deepcopy(field)
         pcx, pcy = self._page_center_pdf()
-        d.rect = rotate_rect_ccw(field.rect, pcx, pcy, rot)
+        d.rect = rotate_rect_about_center(field.rect, pcx, pcy, -rot)
         d.rotation = normalize_angle(field.rotation - rot)
         return d
 
+    def _new_field_rotation_for_page(self) -> float:
+        """在矫正过的页面上新画一个"看起来水平"的框时，该字段应有的自身角度。
+
+        显示角 = 字段自身角度 + 页面矫正角，要让屏幕上是水平的（显示角 0），
+        字段自身角度就得是 -页面矫正角。这也正是 audit_verify C2 断言的语义。
+        """
+        return normalize_angle(-self._current_page_rotation())
+
     def _screen_rect_to_pdf(self, screen_rect: QRectF) -> tuple:
-        """场景像素矩形 → PDF 坐标矩形"""
+        """场景像素矩形 → PDF 坐标矩形（宽高不变，只把中心绕页中心回转）"""
         pdf_rect = (
             screen_rect.left() / SCALE,
             screen_rect.top() / SCALE,
@@ -391,7 +471,7 @@ class PdfCanvas(QGraphicsView):
         rot = self._current_page_rotation()
         if rot != 0:
             pcx, pcy = self._page_center_pdf()
-            pdf_rect = rotate_rect_ccw(pdf_rect, pcx, pcy, rot)
+            pdf_rect = rotate_rect_about_center(pdf_rect, pcx, pcy, -rot)
         return pdf_rect
 
     # ── 吸附与对齐线 ──────────────────────────────
@@ -502,8 +582,13 @@ class PdfCanvas(QGraphicsView):
             self._guide_items.append(item)
 
     def _clear_guides(self):
-        for item in self._guide_items:
-            self._scene.removeItem(item)
+        # _scene.clear() 会销毁图元，_reset_scene_refs 已把列表清空；
+        # 这里再对残留项做一次安全移除（防止调用方绕过统一清理路径）。
+        for item in list(self._guide_items):
+            try:
+                self._scene.removeItem(item)
+            except RuntimeError:
+                pass
         self._guide_items.clear()
 
     # ── 导航 ──────────────────────────────────────
@@ -528,32 +613,56 @@ class PdfCanvas(QGraphicsView):
         t.scale(target, target)
         self.setTransform(t)
 
+    def _clamp_zoom(self, value: float) -> float:
+        """统一的缩放限幅：四处各自为政（1.15 步进、3.0、0.5、0.1、无上限）
+        曾导致"+ 键反而缩小""0.5 时按 − 无反应"这类死区。
+        """
+        return max(ZOOM_MIN, min(ZOOM_MAX, value))
+
+    def _refit(self):
+        """按当前视口重算"适应窗口"的基准比例 _fit_scale。
+
+        zoom_fit / zoom_actual 都以 _fit_scale 为基准，而它只在 show_page 和
+        （原先仅当 _zoom==1 时的）resizeEvent 里更新；窗口改变后再点"适应窗口"
+        会用过期基准，页面不再适配。
+        """
+        rect = self._scene.sceneRect()
+        if rect.isEmpty():
+            return
+        self.fitInView(rect, KEEP_ASPECT)
+        fit = self.transform().m11()
+        if fit > 0:
+            self._fit_scale = fit
+
     def set_zoom_percent(self, percent: int):
-        self._zoom = max(0.1, percent / 100.0)
+        self._zoom = self._clamp_zoom(percent / 100.0)
         self._apply_zoom()
+        self.zoom_changed.emit(self.zoom_percent)
 
     @property
     def zoom_percent(self) -> int:
         return int(round(self._zoom * 100))
 
     def zoom_in(self):
-        self._zoom = min(3.0, self._zoom * 1.15)
+        self._zoom = self._clamp_zoom(self._zoom * 1.15)
         self._apply_zoom()
         self.zoom_changed.emit(self.zoom_percent)
 
     def zoom_out(self):
-        self._zoom = max(0.5, self._zoom / 1.15)
+        self._zoom = self._clamp_zoom(self._zoom / 1.15)
         self._apply_zoom()
         self.zoom_changed.emit(self.zoom_percent)
 
     def zoom_fit(self):
+        self._refit()          # 先按当前视口刷新基准，再回到 100% 基准
         self._zoom = 1.0
         self._apply_zoom()
         self.zoom_changed.emit(self.zoom_percent)
 
     def zoom_actual(self):
+        self._refit()
         if self._fit_scale > 0:
-            self._zoom = 1.0 / self._fit_scale
+            self._zoom = self._clamp_zoom(1.0 / self._fit_scale)
             self._apply_zoom()
             self.zoom_changed.emit(self.zoom_percent)
 
@@ -680,7 +789,15 @@ class PdfCanvas(QGraphicsView):
         if self._selected_field_item is not None and self._selected_field_item.field.id == field_id:
             self._selected_field_item = None
 
-    def select_field(self, field_id: str):
+    def select_field(self, field_id: str, center: bool = True):
+        """选中字段。
+
+        center=True（面板/跨页定位等主动跳转）会把字段滚动到视口中央；
+        鼠标按下路径必须传 center=False —— 否则 centerOn 会先滚动视图，
+        紧接着 QGraphicsView 用**新的**变换把这次 press 映射到别处，
+        FieldItem 收不到按下事件，表现为"点一下没反应、要再点一次"，
+        填写模式下还会出现"每点一次页面就跳一下"。
+        """
         for item in self._field_items.values():
             item.set_selected(False)
         self._selected_field_item = None
@@ -688,13 +805,22 @@ class PdfCanvas(QGraphicsView):
             item = self._field_items[field_id]
             item.set_selected(True)
             self._selected_field_item = item
-            self.centerOn(item)
+            if center:
+                self.centerOn(item)
         elif not field_id:
             self.field_selected_sig.emit("")
         self._reset_prop_baseline()
 
     def select_field_on_page(self, field_id: str):
-        """跨页选中字段：必要时先翻页"""
+        """跨页选中字段：必要时先翻页。
+
+        注意：这里**不能**补发 field_selected_sig。
+        select_field 只在"清空选择"时发信号，非空选中不发射是刻意的：
+        面板点选 → 本方法 → 若再发 field_selected_sig 会回到
+        MainWindow._on_field_selected_in_design → 面板 _on_field_selected_in_list
+        → field_focus_requested → 本方法，形成无限递归（实测直接栈溢出崩溃）。
+        右面板高亮由 MainWindow._on_field_focus_requested 自己负责同步。
+        """
         for f in self._fields:
             if f.id == field_id:
                 if f.page != self._current_page:
@@ -780,14 +906,39 @@ class PdfCanvas(QGraphicsView):
         self.paste_field()
 
     def nudge_selected_field(self, dx: float, dy: float):
+        """方向键微移。
+
+        历史缺陷：每按一次都 push_undo()，而 Qt 的自动重复会以约 30 次/秒
+        触发，一次长按就能把 MAX_UNDO(50) 条真实历史挤掉并清空 redo。
+        现在改为"手势基线"模型：整个按下-松开过程只产生一条撤销记录，
+        与拖拽/旋转的既有手势模型一致。
+        """
         if self._mode != self.MODE_DESIGN or self._selected_field_item is None:
             return
+        if self._nudge_baseline is None:
+            self._nudge_baseline = self._snapshot()
+        self._nudge_without_undo(dx, dy)
+
+    def _nudge_without_undo(self, dx: float, dy: float):
+        if self._selected_field_item is None:
+            return
         item = self._selected_field_item
-        self.push_undo()
         x0, y0, x1, y1 = item.field.rect
         item.field.rect = (x0 + dx, y0 + dy, x1 + dx, y1 + dy)
         item.update_from_field(item.field)
         self._sync_from_item(item)
+
+    def _end_nudge(self):
+        """方向键松开：把手势基线补进撤销栈（无实际位移则不入栈）"""
+        if self._nudge_baseline is None:
+            return
+        if not self._fields_equal(self._nudge_baseline, self._snapshot()):
+            self._undo_stack.append(self._nudge_baseline)
+            if len(self._undo_stack) > MAX_UNDO:
+                self._undo_stack.pop(0)
+            self._redo_stack.clear()
+            self._emit_undo_state()
+        self._nudge_baseline = None
 
     # ── 鼠标事件 ──────────────────────────────────
 
@@ -818,7 +969,7 @@ class PdfCanvas(QGraphicsView):
                     return
 
                 if field_items:
-                    self.select_field(field_items[0].field.id)
+                    self.select_field(field_items[0].field.id, center=False)
                     self.field_selected_sig.emit(field_items[0].field.id)
                     super().mousePressEvent(event)
                     return
@@ -836,7 +987,7 @@ class PdfCanvas(QGraphicsView):
             elif self._mode == self.MODE_FILL:
                 if field_items:
                     self.setFocus(Qt.FocusReason.MouseFocusReason)
-                    self.select_field(field_items[0].field.id)
+                    self.select_field(field_items[0].field.id, center=False)
                     self.field_selected_sig.emit(field_items[0].field.id)
                 else:
                     self._panning = True
@@ -913,6 +1064,9 @@ class PdfCanvas(QGraphicsView):
                     name=f"字段{len(self._fields) + 1}",
                     page=self._current_page,
                     rect=pdf_rect,
+                    # 在矫正过的页面上新画的框，屏幕上必须是水平的：
+                    # 显示角 = 自身角度 + 页面矫正角，故自身角度取 -矫正角。
+                    rotation=self._new_field_rotation_for_page(),
                     tab_order=len(self._fields),
                 )
                 self.add_field(field)
@@ -1014,6 +1168,8 @@ class PdfCanvas(QGraphicsView):
                 Qt.Key.Key_Up: (0, -1), Qt.Key.Key_Down: (0, 1),
             }
             if key in arrow_map and self._selected_field_item is not None:
+                # 连按（含自动重复）只移动；整个"按下-松开"手势在松手时
+                # 才由 _end_nudge 补一条撤销记录，避免 1 秒长按塞进 30 条。
                 step = 10.0 if shift else 1.0
                 ux, uy = arrow_map[key]
                 self.nudge_selected_field(ux * step, uy * step)
@@ -1061,16 +1217,41 @@ class PdfCanvas(QGraphicsView):
                 self.setCursor(Qt.CursorShape.CrossCursor)
             event.accept()
             return
+        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right,
+                           Qt.Key.Key_Up, Qt.Key.Key_Down):
+            self._end_nudge()
+            event.accept()
+            return
         super().keyReleaseEvent(event)
+
+    def focusOutEvent(self, event):
+        """失焦时把所有"按住类"状态复位。
+
+        历史缺陷：按住空格进入平移态后 Alt+Tab / 弹出对话框，画布收不到
+        keyRelease，_space_held 永久为真 —— 此后设计模式里所有左键拖拽都变成
+        平移，再也画不出新字段框，而且光标卡在"手形"。_panning/_rmb_pressed
+        同理。
+        """
+        self._space_held = False
+        self._panning = False
+        self._pan_start = None
+        self._rmb_pressed = False
+        self._rmb_moved = False
+        self._rmb_press_pos = None
+        self._end_nudge()
+        if self._mode == self.MODE_DESIGN:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        super().focusOutEvent(event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if self._fit_scale > 0 and self._zoom == 1.0:
-            rect = self._scene.sceneRect()
-            if not rect.isEmpty():
-                self.fitInView(rect, KEEP_ASPECT)
-                self._fit_scale = self.transform().m11()
-                self._apply_zoom()
+        # 窗口尺寸变了就重算基准比例，并保持用户当前的缩放档位。
+        # （原先只在 _zoom==1.0 时重算，导致"放大后改窗口→点适应窗口"用过期基准）
+        if self._fit_scale > 0 and not self._scene.sceneRect().isEmpty():
+            self._refit()
+            self._apply_zoom()
 
     # ── 滚轮 ──────────────────────────────────────
 
@@ -1100,7 +1281,7 @@ class PdfCanvas(QGraphicsView):
 
     def _zoom_by_wheel(self, delta: int):
         factor = 1.15 if delta > 0 else 1 / 1.15
-        self._zoom = min(3.0, max(0.5, self._zoom * factor))
+        self._zoom = self._clamp_zoom(self._zoom * factor)
         self._apply_zoom()
         self.zoom_changed.emit(self.zoom_percent)
 
